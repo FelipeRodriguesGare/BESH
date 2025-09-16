@@ -45,7 +45,7 @@ services:
       dockerfile: Dockerfile
     container_name: batch-api
     ports:
-      - "5000:5000"
+      - "8080:8080"
     volumes:
       # OPTIONAL: Mount local development directory
       # - <your_local_directory>/<repo_name>:/app
@@ -65,7 +65,7 @@ services:
       vllm:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
