@@ -39,7 +39,7 @@ docker compose -f docker-compose-multi-gpu.yml up -d --build --scale worker=12
 
 ## Screenshots
 
-![BESH Dashboard Overview](images/Bashboard_overview.png)
+![BESH Dashboard Overview](images/Bashboard_overview_new.png)
 
 Features:
 
