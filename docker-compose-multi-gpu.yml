@@ -380,8 +380,9 @@ services:
         condition: service_healthy
       nginx-lb:
         condition: service_healthy
-      worker:
+      redis:
         condition: service_healthy
+      # worker dependency removed to support scaling (--scale worker=4)
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -392,24 +393,24 @@ services:
     networks:
       - batch-network
 
-  # Worker service for processing batch jobs
+  # Worker service for processing batch jobs (scalable with --scale worker=4)
   worker:
     build:
       context: .
       dockerfile: Dockerfile.worker
-
     environment:
       - PYTHONPATH=/app
       - UPLOAD_FOLDER=/tmp/batch_files
       - OPENAI_API_BASE=http://nginx-lb:8000/v1
       - SQLALCHEMY_DATABASE_URI=postgresql+psycopg://replace_with_your_username:replace_with_your_password@postgres:5432/batch
       - REDIS_URL=redis://redis:6379
-      - MAX_WORKERS=256
-      - LITELLM_MAX_CONNECTIONS=1024
-      - LITELLM_MAX_KEEPALIVE_CONNECTIONS=1024
-      - DB_POOL_SIZE=20
-      - DB_MAX_OVERFLOW=200
-
+      - MAX_WORKERS=64
+      - LITELLM_MAX_CONNECTIONS=256
+      - LITELLM_MAX_KEEPALIVE_CONNECTIONS=256
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=50
+      - WORKER_CONCURRENCY=16
+      - BATCH_SIZE=32
     volumes:
       - batch_files:/tmp/batch_files
     depends_on:
@@ -426,6 +427,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    # Remove container_name to allow scaling
+    # Use: docker-compose up --scale worker=4
  
 networks:
   batch-network:
