@@ -6,12 +6,15 @@ import zipfile
 import bz2
 import io
 from typing import Iterator
-from flask import Blueprint, request, jsonify, send_file
-from werkzeug.utils import secure_filename
 from datetime import datetime
-from configs import get_config
 
-files_bp = Blueprint('files', __name__)
+from configs import get_config
+from src.auth import verify_api_key_flexible
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import FileResponse
+
+router = APIRouter()
+
 
 # Load configuration
 config = get_config()
@@ -20,32 +23,33 @@ config = get_config()
 UPLOAD_FOLDER = config.UPLOAD_FOLDER
 
 
-def stream_jsonl_lines(file_storage, compression_format: str | None) -> Iterator[str]:
-    """Yield decoded JSONL lines from an uploaded FileStorage object.
+async def stream_jsonl_lines(upload_file: UploadFile, compression_format: str | None) -> Iterator[str]:
+    """Yield decoded JSONL lines from an uploaded UploadFile object.
 
     This function streams the uploaded payload chunk-by-chunk to avoid loading
     large files into memory. It supports uncompressed and gzip-compressed
     uploads. Other formats fall back to a simple read which may still require
     additional memory.
     """
-
+    await upload_file.seek(0)  # Reset file pointer to beginning
+    
     if compression_format == 'gzip':
-        # Wrap the binary stream directly with GzipFile and TextIOWrapper for
-        # transparent decompression + decoding.
-        with gzip.GzipFile(fileobj=file_storage.stream) as gz:
-            for raw in gz:
-                yield raw.decode('utf-8')
+        # Read entire content for gzip (FastAPI UploadFile doesn't support streaming gzip well)
+        content = await upload_file.read()
+        decompressed = gzip.decompress(content)
+        for line in decompressed.decode('utf-8').splitlines(True):
+            yield line
 
     elif compression_format in (None, ''):
-        # Plain text – iterate over raw binary lines and decode.
-        for raw in file_storage.stream:
-            yield raw.decode('utf-8')
+        # Plain text – read in chunks and decode
+        content = await upload_file.read()
+        for line in content.decode('utf-8').splitlines(True):
+            yield line
 
     else:
         # Fallback: unsupported streaming compression (zip/bz2). We read the
         # entire content (could be large) and decompress using existing util.
-        # This maintains compatibility but not memory efficiency.
-        content = file_storage.read()
+        content = await upload_file.read()
         if compression_format:
             content = decompress_file(content, compression_format)
         for line in content.decode('utf-8').splitlines(True):
@@ -89,44 +93,36 @@ def decompress_file(file_content, compression_format):
     except Exception as e:
         raise ValueError(f"Failed to decompress file: {str(e)}")
 
-@files_bp.route('/files', methods=['POST'])
-def upload_file():
+@router.post('/files')
+async def upload_file(
+    file: UploadFile = File(...),
+    purpose: str = Form(default="batch"),
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Upload a file for batch processing"""
     try:
-        if 'file' not in request.files:
-            return jsonify({
-                'error': {
-                    'message': 'No file provided',
-                    'type': 'invalid_request_error'
-                }
-            }), 400
-        
-        file = request.files['file']
-        purpose = request.form.get('purpose', 'batch')
-        
-        if file.filename == '':
-            return jsonify({
-                'error': {
-                    'message': 'No file selected',
-                    'type': 'invalid_request_error'
-                }
-            }), 400
+        if not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "No file selected", "type": "invalid_request_error"}
+            )
         
         # Generate unique file ID
         file_id = f"file_{uuid.uuid4().hex}"
-        filename = secure_filename(file.filename)
+        # Simple filename sanitization (replacing werkzeug's secure_filename)
+        filename = "".join(c for c in file.filename if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
         file_path = os.path.join(UPLOAD_FOLDER, f"{file_id}.jsonl")
         
         # Determine compression format (by extension only to avoid reading into memory)
         compression_format = detect_compression_format(filename)
 
         # For compression ratio stats we rely on the raw request payload size if available
-        original_size = request.content_length or 0
+        original_size = file.size or 0
 
         # Stream-decompress / copy while validating each JSONL line
         try:
             with open(file_path, 'w', encoding='utf-8') as dest:
-                for raw_line in stream_jsonl_lines(file, compression_format):
+                async for raw_line in stream_jsonl_lines(file, compression_format):
                     line = raw_line.rstrip('\n')
                     if line.strip():
                         json.loads(line)  # validate JSON per line
@@ -135,21 +131,17 @@ def upload_file():
             # Remove partially written file
             if os.path.exists(file_path):
                 os.remove(file_path)
-            return jsonify({
-                'error': {
-                    'message': 'Invalid JSONL format',
-                    'type': 'invalid_request_error'
-                }
-            }), 400
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "Invalid JSONL format", "type": "invalid_request_error"}
+            )
         except Exception as e:
             if os.path.exists(file_path):
                 os.remove(file_path)
-            return jsonify({
-                'error': {
-                    'message': f'Failed to process file: {str(e)}',
-                    'type': 'invalid_request_error'
-                }
-            }), 400
+            raise HTTPException(
+                status_code=400,
+                detail={"message": f'Failed to process file: {str(e)}', "type": "invalid_request_error"}
+            )
 
         # File successfully written, gather stats
         file_size = os.path.getsize(file_path)
@@ -172,95 +164,106 @@ def upload_file():
                 'compression_ratio': round(original_size / file_size, 2) if file_size > 0 else 1
             }
         
-        return jsonify(response_data), 200
+        return response_data
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@files_bp.route('/files/<file_id>', methods=['GET'])
-def get_file_info(file_id):
+@router.get('/files/{file_id}')
+async def get_file_info(
+    file_id: str,
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Get file information"""
     try:
         file_path = os.path.join(UPLOAD_FOLDER, f"{file_id}.jsonl")
         
         if not os.path.exists(file_path):
-            return jsonify({
-                'error': {
-                    'message': f'File {file_id} not found',
-                    'type': 'not_found_error'
-                }
-            }), 404
+            raise HTTPException(
+                status_code=404,
+                detail={"message": f'File {file_id} not found', "type": "not_found_error"}
+            )
         
         file_size = os.path.getsize(file_path)
         created_at = os.path.getctime(file_path)
         
-        return jsonify({
+        return {
             'id': file_id,
             'object': 'file',
             'bytes': file_size,
             'created_at': int(created_at),
             'filename': f"{file_id}.jsonl",
             'purpose': 'batch'
-        }), 200
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
     
-@files_bp.route('/files/<file_id>', methods=['DELETE'])
-def delete_file(file_id):
+@router.delete('/files/{file_id}')
+async def delete_file(
+    file_id: str,
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Delete a file"""
     try:
         file_path = os.path.join(UPLOAD_FOLDER, f"{file_id}.jsonl")
         os.remove(file_path)
-        return jsonify({
+        return {
             'id': file_id,
             'object': 'file',
             'deleted': True
-        }), 200
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@files_bp.route('/files/<file_id>/content', methods=['GET'])
-def download_file(file_id):
+@router.get('/files/{file_id}/content')
+async def download_file(
+    file_id: str,
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Download file content"""
     try:
         file_path = os.path.join(UPLOAD_FOLDER, f"{file_id}.jsonl")
         
         if not os.path.exists(file_path):
-            return jsonify({
-                'error': {
-                    'message': f'File {file_id} not found',
-                    'type': 'not_found_error'
-                }
-            }), 404
+            raise HTTPException(
+                status_code=404,
+                detail={"message": f'File {file_id} not found', "type": "not_found_error"}
+            )
         
-        return send_file(file_path, as_attachment=True, download_name=f"{file_id}.jsonl")
+        return FileResponse(
+            path=file_path,
+            filename=f"{file_id}.jsonl",
+            media_type='application/octet-stream'
+        )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@files_bp.route('/files', methods=['GET'])
-def list_files():
+@router.get('/files')
+async def list_files(
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """List all uploaded files"""
     try:
         files = []
@@ -284,16 +287,16 @@ def list_files():
         # Sort by created_at descending
         files.sort(key=lambda x: x['created_at'], reverse=True)
         
-        return jsonify({
+        return {
             'object': 'list',
             'data': files
-        }), 200
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 

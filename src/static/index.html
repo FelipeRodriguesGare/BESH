@@ -59,11 +59,6 @@
             gap: 15px;
         }
 
-        .refresh-controls {
-            display: flex;
-            gap: 15px;
-            align-items: center;
-        }
 
         button {
             background: #3b82f6;
@@ -90,21 +85,6 @@
             transform: none;
         }
 
-        .auto-refresh-toggle {
-            background: #10b981;
-        }
-
-        .auto-refresh-toggle:hover {
-            background: #059669;
-        }
-
-        .auto-refresh-toggle.active {
-            background: #dc2626;
-        }
-
-        .auto-refresh-toggle.active:hover {
-            background: #b91c1c;
-        }
 
         .delete-btn {
             background: #dc2626;
@@ -622,13 +602,7 @@
             }
 
             .controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .refresh-controls {
                 justify-content: center;
-                flex-wrap: wrap;
             }
 
             .timezone-selector {
@@ -664,48 +638,66 @@
         </div>
 
         <div class="controls">
-            <div class="refresh-controls">
-                <button onclick="loadDashboard()" id="refresh-btn">
-                    <span class="spinner" id="refresh-spinner" style="display: none;"></span>
-                    <span id="refresh-text">Refresh</span>
-                </button>
-                <button onclick="toggleAutoRefresh()" id="auto-refresh-btn" class="auto-refresh-toggle">
-                    <span id="auto-refresh-text">Enable Auto-refresh</span>
-                </button>
-                <div class="timezone-selector">
-                    <label for="timezone-select">Timezone:</label>
-                    <select id="timezone-select" onchange="changeTimezone()">
-                        <option value="auto">Auto-detect</option>
-                        <option value="UTC">UTC</option>
-                        <option value="America/New_York">Eastern Time</option>
-                        <option value="America/Chicago">Central Time</option>
-                        <option value="America/Denver">Mountain Time</option>
-                        <option value="America/Los_Angeles">Pacific Time</option>
-                        <option value="Europe/London">London</option>
-                        <option value="Europe/Berlin">Berlin/Paris</option>
-                        <option value="Europe/Amsterdam">Amsterdam</option>
-                        <option value="Asia/Tokyo">Tokyo</option>
-                        <option value="Asia/Shanghai">Shanghai</option>
-                        <option value="Asia/Hong_Kong">Hong Kong</option>
-                        <option value="Asia/Singapore">Singapore</option>
-                        <option value="Asia/Kolkata">Mumbai/Delhi</option>
-                        <option value="Australia/Sydney">Sydney</option>
-                    </select>
-                </div>
+            <div class="timezone-selector">
+                <label for="timezone-select">Timezone:</label>
+                <select id="timezone-select" onchange="changeTimezone()">
+                    <option value="auto">Auto-detect</option>
+                    <option value="UTC">UTC</option>
+                    <option value="America/New_York">Eastern Time</option>
+                    <option value="America/Chicago">Central Time</option>
+                    <option value="America/Denver">Mountain Time</option>
+                    <option value="America/Los_Angeles">Pacific Time</option>
+                    <option value="Europe/London">London</option>
+                    <option value="Europe/Berlin">Berlin/Paris</option>
+                    <option value="Europe/Amsterdam">Amsterdam</option>
+                    <option value="Asia/Tokyo">Tokyo</option>
+                    <option value="Asia/Shanghai">Shanghai</option>
+                    <option value="Asia/Hong_Kong">Hong Kong</option>
+                    <option value="Asia/Singapore">Singapore</option>
+                    <option value="Asia/Kolkata">Mumbai/Delhi</option>
+                    <option value="Australia/Sydney">Sydney</option>
+                </select>
             </div>
-            <div class="last-updated" id="last-updated"></div>
-    </div>
+        </div>
 
         <div id="error-container"></div>
 
-        <div class="summary-section" id="summary-section">
-            <!-- Summary cards will be inserted here -->
+        <div class="analytics-section">
+            <div class="analytics-header">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h2>Dashboard Summary</h2>
+                        <p>Overview and status breakdown of all batches in the last 24 hours</p>
+                    </div>
+                    <button onclick="loadDashboardData()" id="dashboard-refresh-btn">
+                        <span class="spinner" id="dashboard-spinner" style="display: none;"></span>
+                        <span id="dashboard-text">Refresh</span>
+                    </button>
+                </div>
+            </div>
+            <div class="summary-section" id="summary-section">
+                <!-- Summary cards will be inserted here -->
+            </div>
+            <div id="status-distribution-container">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <span style="margin-left: 10px;">Loading dashboard...</span>
+                </div>
+            </div>
         </div>
 
         <div class="analytics-section">
             <div class="analytics-header">
-                <h2>Batch Creation Timeline</h2>
-                <p>Batch creation frequency over the last 24 hours (15-minute intervals)</p>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h2>Batch Creation Timeline</h2>
+                        <p>Batch creation frequency over the last 24 hours (15-minute intervals)</p>
+                    </div>
+                    <button onclick="loadAnalytics()" id="analytics-refresh-btn">
+                        <span class="spinner" id="analytics-spinner" style="display: none;"></span>
+                        <span id="analytics-text">Refresh</span>
+                    </button>
+                </div>
             </div>
             <div id="analytics-container">
                 <div class="loading">
@@ -717,8 +709,16 @@
 
         <div class="analytics-section">
             <div class="analytics-header">
-                <h2>Token Usage Timeline</h2>
-                <p>Tokens processed and completion time over the last 24 hours (15-minute intervals) - Input tokens, Output tokens, and Duration stacked</p>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h2>Token Usage Timeline</h2>
+                        <p>Tokens processed and completion time over the last 24 hours (15-minute intervals) - Input tokens, Output tokens, and Duration stacked</p>
+                    </div>
+                    <button onclick="loadTokenAnalytics()" id="token-refresh-btn">
+                        <span class="spinner" id="token-spinner" style="display: none;"></span>
+                        <span id="token-text">Refresh</span>
+                    </button>
+                </div>
             </div>
             <div id="token-analytics-container">
                 <div class="loading">
@@ -730,8 +730,16 @@
 
         <div class="batches-section">
             <div class="batches-header">
-                <h2>Recent Batches</h2>
-                <p style="color: #64748b; font-size: 0.9rem; margin-top: 5px;">Showing batches created in the last 24 hours</p>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h2>Recent Batches</h2>
+                        <p style="color: #64748b; font-size: 0.9rem; margin-top: 5px;">Showing batches created in the last 24 hours</p>
+                    </div>
+                    <button onclick="loadBatches()" id="batches-refresh-btn">
+                        <span class="spinner" id="batches-spinner" style="display: none;"></span>
+                        <span id="batches-text">Refresh</span>
+                    </button>
+                </div>
     </div>
 
             <div id="batches-container">
@@ -750,11 +758,9 @@
     </div>
 
     <script>
-        const API_BASE_URL = '/v1/batches';
+        const API_BASE_URL = '/v1';
         let currentPage = 1;
         let totalPages = 1;
-        let autoRefreshInterval = null;
-        let isAutoRefresh = false;
         let selectedTimezone = 'auto';
 
         // Timezone utility functions
@@ -819,8 +825,11 @@
             // Save to localStorage
             localStorage.setItem('preferred-timezone', selectedTimezone);
             
-            // Refresh the dashboard to update all timestamps
-            loadDashboard(currentPage);
+            // Refresh all sections to update timestamps
+            loadDashboardData();
+            loadAnalytics();
+            loadTokenAnalytics();
+            loadBatches(currentPage);
         }
         
         function initializeTimezone() {
@@ -836,14 +845,17 @@
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
             initializeTimezone();
-            loadDashboard();
+            loadDashboardData();
+            loadAnalytics();
+            loadTokenAnalytics();
+            loadBatches();
         });
 
-        // Load dashboard data
-        async function loadDashboard(page = 1) {
-            const refreshBtn = document.getElementById('refresh-btn');
-            const refreshSpinner = document.getElementById('refresh-spinner');
-            const refreshText = document.getElementById('refresh-text');
+        // Load dashboard data (summary + status distribution)
+        async function loadDashboardData() {
+            const refreshBtn = document.getElementById('dashboard-refresh-btn');
+            const refreshSpinner = document.getElementById('dashboard-spinner');
+            const refreshText = document.getElementById('dashboard-text');
             
             // Show loading state
             refreshSpinner.style.display = 'inline-block';
@@ -851,41 +863,19 @@
             refreshBtn.disabled = true;
 
             try {
-                // Load dashboard, analytics, and token analytics data in parallel
-                const [dashboardResponse, analyticsResponse, tokenAnalyticsResponse] = await Promise.all([
-                    fetch(`${API_BASE_URL}/dashboard?page=${page}&limit=10`),
-                    fetch(`${API_BASE_URL}/analytics/timeline`),
-                    fetch(`${API_BASE_URL}/analytics/tokens`)
-                ]);
+                const response = await fetch(`${API_BASE_URL}/dashboard?page=1&limit=1`);
                 
-                if (!dashboardResponse.ok) {
-                    throw new Error(`Dashboard error! status: ${dashboardResponse.status}`);
+                if (!response.ok) {
+                    throw new Error(`Dashboard error! status: ${response.status}`);
                 }
                 
-                const dashboardData = await dashboardResponse.json();
-                displayDashboard(dashboardData);
-                
-                if (analyticsResponse.ok) {
-                    const analyticsData = await analyticsResponse.json();
-                    displayAnalytics(analyticsData);
-                } else {
-                    console.warn('Failed to load analytics data');
-                    displayAnalyticsError();
-                }
-
-                if (tokenAnalyticsResponse.ok) {
-                    const tokenAnalyticsData = await tokenAnalyticsResponse.json();
-                    displayTokenAnalytics(tokenAnalyticsData);
-                } else {
-                    console.warn('Failed to load token analytics data');
-                    displayTokenAnalyticsError();
-                }
-                
-                updateLastUpdated();
+                const data = await response.json();
+                displaySummary(data.summary);
+                displayStatusDistribution(data.summary);
                 clearError();
                 
             } catch (error) {
-                console.error('Error loading dashboard:', error);
+                console.error('Error loading dashboard data:', error);
                 displayError(`Failed to load dashboard: ${error.message}`);
             } finally {
                 // Hide loading state
@@ -895,19 +885,112 @@
             }
         }
 
-        // Display dashboard data
-        function displayDashboard(data) {
-            displaySummary(data.summary);
-            displayBatches(data.batches);
-            displayPagination(data.pagination);
-            currentPage = data.pagination.page;
-            totalPages = Math.ceil(data.pagination.total_batches / data.pagination.limit);
+        // Load analytics data
+        async function loadAnalytics() {
+            const refreshBtn = document.getElementById('analytics-refresh-btn');
+            const refreshSpinner = document.getElementById('analytics-spinner');
+            const refreshText = document.getElementById('analytics-text');
+            
+            // Show loading state
+            refreshSpinner.style.display = 'inline-block';
+            refreshText.textContent = 'Loading...';
+            refreshBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/analytics/timeline`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    displayAnalytics(data);
+                } else {
+                    console.warn('Failed to load analytics data');
+                    displayAnalyticsError();
+                }
+                
+            } catch (error) {
+                console.error('Error loading analytics:', error);
+                displayAnalyticsError();
+            } finally {
+                // Hide loading state
+                refreshSpinner.style.display = 'none';
+                refreshText.textContent = 'Refresh';
+                refreshBtn.disabled = false;
+            }
         }
+
+        // Load token analytics data
+        async function loadTokenAnalytics() {
+            const refreshBtn = document.getElementById('token-refresh-btn');
+            const refreshSpinner = document.getElementById('token-spinner');
+            const refreshText = document.getElementById('token-text');
+            
+            // Show loading state
+            refreshSpinner.style.display = 'inline-block';
+            refreshText.textContent = 'Loading...';
+            refreshBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/analytics/tokens`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    displayTokenAnalytics(data);
+                } else {
+                    console.warn('Failed to load token analytics data');
+                    displayTokenAnalyticsError();
+                }
+                
+            } catch (error) {
+                console.error('Error loading token analytics:', error);
+                displayTokenAnalyticsError();
+            } finally {
+                // Hide loading state
+                refreshSpinner.style.display = 'none';
+                refreshText.textContent = 'Refresh';
+                refreshBtn.disabled = false;
+            }
+        }
+
+        // Load batches data
+        async function loadBatches(page = 1) {
+            const refreshBtn = document.getElementById('batches-refresh-btn');
+            const refreshSpinner = document.getElementById('batches-spinner');
+            const refreshText = document.getElementById('batches-text');
+            
+            // Show loading state
+            refreshSpinner.style.display = 'inline-block';
+            refreshText.textContent = 'Loading...';
+            refreshBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/dashboard?page=${page}&limit=10`);
+                
+                if (!response.ok) {
+                    throw new Error(`Batches error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                displayBatches(data.batches);
+                displayPagination(data.pagination);
+                currentPage = data.pagination.page;
+                totalPages = Math.ceil(data.pagination.total_batches / data.pagination.limit);
+                clearError();
+                
+            } catch (error) {
+                console.error('Error loading batches:', error);
+                displayError(`Failed to load batches: ${error.message}`);
+            } finally {
+                // Hide loading state
+                refreshSpinner.style.display = 'none';
+                refreshText.textContent = 'Refresh';
+                refreshBtn.disabled = false;
+            }
+        }
+
 
         // Display summary statistics
         function displaySummary(summary) {
             const summarySection = document.getElementById('summary-section');
-            const tokenUsage = summary.overall_token_usage;
             
             summarySection.innerHTML = `
                 <div class="summary-card">
@@ -918,7 +1001,7 @@
                 
                 <div class="summary-card">
                     <h3>Total Requests</h3>
-                    <div class="value">${tokenUsage.total_requests.toLocaleString()}</div>
+                    <div class="value">${summary.total_request_completed.toLocaleString()}</div>
                     <div class="label">Last 24 hours</div>
                 </div>
                 
@@ -929,25 +1012,41 @@
                 </div>
                 
                 <div class="summary-card">
-                    <h3>Status Distribution</h3>
+                    <h3>Token Usage</h3>
+                    <div class="detail-item">
+                        <div class="detail-label">Total Tokens</div>
+                        <div class="detail-value">${summary.total_tokens.toLocaleString() || 0}</div>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <small style="color: #64748b;">
+                            Prompt: ${(summary.prompt_tokens || 0).toLocaleString()}
+                            Completion: ${(summary.completion_tokens || 0).toLocaleString()}
+                        </small>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Display status distribution
+        function displayStatusDistribution(summary) {
+            const container = document.getElementById('status-distribution-container');
+            
+            if (!summary.batches_by_status || Object.keys(summary.batches_by_status).length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <h3>No status data available</h3>
+                        <p>No batch status information found for the last 24 hours.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = `
+                <div style="padding: 20px;">
                     <div class="status-distribution">
                         ${Object.entries(summary.batches_by_status).map(([status, count]) => 
                             `<div class="status-item status-${status}">${status}: ${count}</div>`
                         ).join('')}
-                    </div>
-                </div>
-                
-                <div class="summary-card">
-                    <h3>Token Usage</h3>
-                    <div class="detail-item">
-                        <div class="detail-label">Total Tokens</div>
-                        <div class="detail-value">${tokenUsage.total_tokens.toLocaleString()}</div>
-                    </div>
-                    <div style="margin-top: 10px;">
-                        <small style="color: #64748b;">
-                            Prompt: ${tokenUsage.prompt_tokens.toLocaleString()} | 
-                            Completion: ${tokenUsage.completion_tokens.toLocaleString()}
-                        </small>
                     </div>
                 </div>
             `;
@@ -1066,35 +1165,10 @@
         // Navigate to page
         function goToPage(page) {
             if (page >= 1 && page <= totalPages) {
-                loadDashboard(page);
+                loadBatches(page);
             }
         }
 
-        // Toggle auto-refresh
-        function toggleAutoRefresh() {
-            const btn = document.getElementById('auto-refresh-btn');
-            const text = document.getElementById('auto-refresh-text');
-            
-            if (isAutoRefresh) {
-                clearInterval(autoRefreshInterval);
-                isAutoRefresh = false;
-                btn.classList.remove('active');
-                text.textContent = 'Enable Auto-refresh';
-                } else {
-                autoRefreshInterval = setInterval(() => {
-                    loadDashboard(currentPage);
-                }, 30000); // Refresh every 30 seconds
-                isAutoRefresh = true;
-                btn.classList.add('active');
-                text.textContent = 'Disable Auto-refresh';
-            }
-        }
-
-        // Update last updated timestamp
-        function updateLastUpdated() {
-            const lastUpdated = document.getElementById('last-updated');
-            lastUpdated.textContent = `Last updated: ${formatDateInTimezone(new Date().toISOString())}`;
-        }
 
         // Display error
         function displayError(message) {
@@ -1330,8 +1404,9 @@
                 const result = await response.json();
                 alert(result.message || 'Batch deleted successfully');
                 
-                // Reload the dashboard to reflect changes
-                loadDashboard(currentPage);
+                // Reload the batches and dashboard to reflect changes
+                loadBatches(currentPage);
+                loadDashboardData();
                 
             } catch (error) {
                 console.error('Error deleting batch:', error);
