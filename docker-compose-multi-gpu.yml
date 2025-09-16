@@ -1,6 +1,44 @@
 version: '3.8'
 
 services:
+
+  # Postgres database (shared)
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=replace_with_your_username
+      - POSTGRES_PASSWORD=replace_with_your_password
+      - POSTGRES_DB=batch
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U replace_with_your_username -d batch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - batch-network
+
+  # Redis for caching and queuing
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - batch-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   # Load balancer for distributing requests across vLLM instances
   nginx-lb:
     image: nginx:alpine
@@ -8,7 +46,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./nginx-8gpu.conf:/etc/nginx/nginx.conf:ro
+      - ./${NGINX_CONF:-nginx-24gpu.conf}:/etc/nginx/nginx.conf:ro
     depends_on:
       - vllm-gpu-0
       - vllm-gpu-1
@@ -27,17 +65,32 @@ services:
     restart: unless-stopped
     networks:
       - batch-network
+    extra_hosts:
+      # Remote cluster A (map to REMOTE_CLUSTER_HOST_A)
+      - "remote-vllm-gpu-0:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      - "remote-vllm-gpu-1:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      - "remote-vllm-gpu-2:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      - "remote-vllm-gpu-3:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      - "remote-vllm-gpu-4:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      - "remote-vllm-gpu-5:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      - "remote-vllm-gpu-6:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      - "remote-vllm-gpu-7:${REMOTE_CLUSTER_HOST_A:-127.0.0.1}"
+      # Remote cluster B (map to REMOTE_CLUSTER_HOST_B)
+      - "remote2-vllm-gpu-0:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
+      - "remote2-vllm-gpu-1:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
+      - "remote2-vllm-gpu-2:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
+      - "remote2-vllm-gpu-3:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
+      - "remote2-vllm-gpu-4:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
+      - "remote2-vllm-gpu-5:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
+      - "remote2-vllm-gpu-6:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
+      - "remote2-vllm-gpu-7:${REMOTE_CLUSTER_HOST_B:-127.0.0.1}"
 
-  # vLLM instance for GPU 0
   vllm-gpu-0:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-0
     platform: linux/amd64
-    ports:
-      - "8001:8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
-
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     command: [
@@ -64,16 +117,14 @@ services:
     networks:
       - batch-network
 
-  # vLLM instance for GPU 1
   vllm-gpu-1:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-1
     platform: linux/amd64
-    ports:
-      - "8002:8000"
+    expose:
+      - "8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
-
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     command: [
@@ -100,16 +151,14 @@ services:
     networks:
       - batch-network
 
-  # vLLM instance for GPU 2
   vllm-gpu-2:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-2
     platform: linux/amd64
-    ports:
-      - "8003:8000"
+    expose:
+      - "8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
-
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     command: [
@@ -136,13 +185,12 @@ services:
     networks:
       - batch-network
 
-  # vLLM instance for GPU 3
   vllm-gpu-3:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-3
     platform: linux/amd64
-    ports:
-      - "8004:8000"
+    expose:
+      - "8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
     environment:
@@ -171,13 +219,12 @@ services:
     networks:
       - batch-network
 
-  # vLLM instance for GPU 4
   vllm-gpu-4:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-4
     platform: linux/amd64
-    ports:
-      - "8005:8000"
+    expose:
+      - "8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
     environment:
@@ -206,16 +253,14 @@ services:
     networks:
       - batch-network
 
-  # vLLM instance for GPU 5
   vllm-gpu-5:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-5
     platform: linux/amd64
-    ports:
-      - "8006:8000"
+    expose:
+      - "8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
-
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     command: [
@@ -242,16 +287,14 @@ services:
     networks:
       - batch-network
 
-  # vLLM instance for GPU 6
   vllm-gpu-6:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-6
     platform: linux/amd64
-    ports:
-      - "8007:8000"
+    expose:
+      - "8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
-
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     command: [
@@ -278,16 +321,14 @@ services:
     networks:
       - batch-network
 
-  # vLLM instance for GPU 7
   vllm-gpu-7:
     image: vllm/vllm-openai:latest
     container_name: vllm-server-gpu-7
     platform: linux/amd64
-    ports:
-      - "8008:8000"
+    expose:
+      - "8000"
     volumes:
       - vllm_models:/root/.cache/huggingface
-
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     command: [
@@ -314,34 +355,36 @@ services:
     networks:
       - batch-network
 
-  # Batch API service
-  batch-api:
+  fast-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: batch-api
+    container_name: fast-api
     ports:
-      - "5000:5000"
+      - "8080:8080"
     volumes:
-      # OPTIONAL: Mount local development directory
-      # - <your_local_directory>/<repo_name>:/app
-      - database_data:/app/src/database
+      - /home/floris/BatchEndpoint:/app
       - batch_files:/tmp/batch_files
+      - ./logs:/app/logs
     environment:
       - OPENAI_API_BASE=http://nginx-lb:8000/v1
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - FLASK_ENV=production
-      - FLASK_APP=src/main.py
+      - OPENAI_API_KEY=dummy-key
+      - UPLOAD_FOLDER=/tmp/batch_files
       - PYTHONPATH=/app
-      - SQLALCHEMY_DATABASE_URI=sqlite:////app/src/database/app.db
-      # Increased worker limits for 8 GPU setup
-      - MAX_WORKERS=800
-      - MAX_CONCURRENT_BATCHES=8
+      - SQLALCHEMY_DATABASE_URI=postgresql+psycopg://batch:batch@postgres:5432/batch
+      - REDIS_URL=redis://redis:6379
+      - DB_POOL_SIZE=20
+      - DB_MAX_OVERFLOW=200
     depends_on:
+      postgres:
+        condition: service_healthy
       nginx-lb:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      # worker dependency removed to support scaling (--scale worker=4)
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -350,14 +393,54 @@ services:
     networks:
       - batch-network
 
+  # Worker service for processing batch jobs (scalable with --scale worker=4)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - PYTHONPATH=/app
+      - UPLOAD_FOLDER=/tmp/batch_files
+      - OPENAI_API_BASE=http://nginx-lb:8000/v1
+      - SQLALCHEMY_DATABASE_URI=postgresql+psycopg://replace_with_your_username:replace_with_your_password@postgres:5432/batch
+      - REDIS_URL=redis://redis:6379
+      - MAX_WORKERS=64
+      - LITELLM_MAX_CONNECTIONS=256
+      - LITELLM_MAX_KEEPALIVE_CONNECTIONS=256
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=50
+      - WORKER_CONCURRENCY=16
+      - BATCH_SIZE=32
+    volumes:
+      - batch_files:/tmp/batch_files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - batch-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import redis; r=redis.Redis(host=\"redis\", port=6379); r.ping()'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    # Remove container_name to allow scaling
+    # Use: docker-compose up --scale worker=4
+ 
 networks:
   batch-network:
     driver: bridge
 
 volumes:
-  database_data:
+
+  postgres_data:
     driver: local
   batch_files:
     driver: local
   vllm_models:
+    driver: local
+  redis_data:
     driver: local

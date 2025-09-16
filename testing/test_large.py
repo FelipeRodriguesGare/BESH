@@ -17,10 +17,12 @@ import os
 user_prompt = "Hello"
 system_prompt = "You are a helpful assistant."
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:5000/v1")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8080/v1")
 MODEL = os.getenv("MODEL_NAME", 'openai/gpt-4.1-nano')
-BATCH_COUNT = 15
-REQUESTS_PER_BATCH = 10
+BATCH_COUNT = 10
+REQUESTS_PER_BATCH = 20
+API_KEY_HEADER = os.getenv("API_KEY_HEADER", "test")
+headers = {"X-API-Key": API_KEY_HEADER}
 
 
 def create_sample_batch_file(filename, num_requests=10, compression='gzip'):
@@ -71,7 +73,7 @@ def upload_file(filename):
         with open(filepath, 'rb') as f:
             files = {'file': (filename, f)}
             data = {'purpose': 'batch'}
-            response = requests.post(f"{BASE_URL}/files", files=files, data=data)
+            response = requests.post(f"{BASE_URL}/files", files=files, data=data, headers=headers)
         
         if response.status_code == 200:
             file_info = response.json()
@@ -97,20 +99,19 @@ def create_batch(file_id, endpoint="/v1/chat/completions"):
         "input_file_id": file_id,
         "endpoint": endpoint,
         "completion_window": "24h",
-        "metadata": {"demo": "batch_processing"}
     }
     
-    response = requests.post(f"{BASE_URL}/batches", json=data)
+    response = requests.post(f"{BASE_URL}/batches", json=data, headers=headers)
     return response.json()
 
 def get_batch_status(batch_id):
     """Get status of a specific batch"""
-    response = requests.get(f"{BASE_URL}/batches/{batch_id}")
+    response = requests.get(f"{BASE_URL}/batches/{batch_id}", headers=headers)
     return response.json()
 
 def get_manager_status():
     """Get the overall batch manager status"""
-    response = requests.get(f"{BASE_URL}/batches/status")
+    response = requests.get(f"{BASE_URL}/batches/status", headers=headers)
     return response.json()
 
 def main():
@@ -222,13 +223,15 @@ def test_large():
     for batch_id in batch_ids:
         batch_status = get_batch_status(batch_id)
         status_text = batch_status.get('status', 'unknown')
-        request_counts = batch_status.get('request_counts', {})
+        request_failed = batch_status.get('request_failed', 0)
+        request_completed = batch_status.get('request_completed', 0)
+        request_total = batch_status.get('request_total', 0)
 
         if status_text == 'completed':
             retrieved_batch += 1
         
-        errors_count += request_counts.get("failed", 0)
-        completed_count += request_counts.get("completed", 0)
+        errors_count += request_failed
+        completed_count += request_completed
     
     assert retrieved_batch == len_batch_ids, "Not all batches retrieved"
     assert errors_count == 0, "There are errors in the batches"

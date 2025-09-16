@@ -20,20 +20,21 @@ A high-performance batch processing API for large language models with support f
 ### Standard Deployment (Single GPU)
 
 ```bash
-# Single GPU setup with validation and health checks
-make quick-start
+docker compose -f docker-compose.yml up -d --build --scale worker=4
 
 # Access the dashboard
-curl http://localhost:5000/
+curl http://localhost:8080/
 ```
 
-### High-Performance Deployment (8-GPU)
+### High-Performance Deployment (24-GPU)
 
-For high-throughput production workloads, use the 8-GPU configuration with load balancing:
+For high-throughput production workloads, use the 24-GPU configuration with load balancing:
 
 ```bash
-# 8 GPU setup with validation and health checks  
-make quick-start-8gpu
+export NGINX_CONF=nginx-24gpu.conf
+export REMOTE_CLUSTER_HOST_A=<ip_remote_cluster>
+export REMOTE_CLUSTER_HOST_B=<ip_remote_cluster>
+docker compose -f docker-compose-multi-gpu.yml up -d --build --scale worker=12
 ```
 
 ## Screenshots
@@ -47,23 +48,6 @@ Features:
 - See stats per 24h
 - See and delete individual batches
 
-## Full control
-
-```bash
-# Single GPU operations
-make up          # Start services
-make down        # Stop services  
-make rebuild     # Full rebuild
-make logs        # View logs
-make health      # Check service health
-
-# 8 GPU operations
-make up-8gpu     # Start 8 GPU setup
-make down-8gpu   # Stop 8 GPU setup
-make rebuild-8gpu # Full 8 GPU rebuild
-make health-8gpu # Check 8 GPU health
-```
-
 ## Tips
 
 Things you might want check:
@@ -75,17 +59,10 @@ Things you might want check:
 - Consider uploading the model once for faster init on 8 gpus.
 - There is no storage managment system -> make sure you delete your batch files (in & out)
 
-Helpers:
-
-```bash
-make help        # Show all available commands
-make status      # Show service status
-make validate-env # Validate environment variables
-```
 
 ## 8-GPU Architecture Overview
 
-The 8-GPU deployment provides horizontal scaling with the following architecture:
+The 8-GPU deployment provides horizontal scaling with the following architecture, featuring multiple workers and a Redis queue for efficient batch processing:
 
 ```mermaid
 graph TB
@@ -93,32 +70,57 @@ graph TB
         Client[Client Applications]
     end
     
+    subgraph "API Layer"
+        BatchAPI[Batch API<br/>:8080]
+    end
+    
+    subgraph "Queue Layer"
+        Queue[Redis Queue<br/>:6379]
+    end
+    
+    subgraph "Worker Layer"
+        Worker1[Worker 1]
+        Worker2[Worker 2]  
+        Worker3[Worker 3]
+        Worker4[Worker 4]
+    end
+    
     subgraph "Load Balancer Layer"
         LB[Nginx Load Balancer<br/>:8000]
     end
     
     subgraph "vLLM Inference Layer"
-        GPU0[vLLM GPU-0<br/>:8001]
-        GPU1[vLLM GPU-1<br/>:8002]
-        GPU2[vLLM GPU-2<br/>:8003]
-        GPU3[vLLM GPU-3<br/>:8004]
-        GPU4[vLLM GPU-4<br/>:8005]
-        GPU5[vLLM GPU-5<br/>:8006]
-        GPU6[vLLM GPU-6<br/>:8007]
-        GPU7[vLLM GPU-7<br/>:8008]
-    end
-    
-    subgraph "API Layer"
-        BatchAPI[Batch API<br/>:5000]
+        GPU0[vLLM GPU-0<br/>Device: GPU 0]
+        GPU1[vLLM GPU-1<br/>Device: GPU 1]
+        GPU2[vLLM GPU-2<br/>Device: GPU 2]
+        GPU3[vLLM GPU-3<br/>Device: GPU 3]
+        GPU4[vLLM GPU-4<br/>Device: GPU 4]
+        GPU5[vLLM GPU-5<br/>Device: GPU 5]
+        GPU6[vLLM GPU-6<br/>Device: GPU 6]
+        GPU7[vLLM GPU-7<br/>Device: GPU 7]
     end
     
     subgraph "Storage Layer"
-        DB[(Database)]
-        Models[(Model Cache)]
-        Files[(Batch Files)]
+        DB[(PostgreSQL<br/>Database)]
+        Models[(Model Cache<br/>HuggingFace)]
+        Files[(Batch Files<br/>Volume)]
     end
     
-    Client --> LB
+    Client --> BatchAPI
+    BatchAPI --> Queue
+    BatchAPI --> DB
+    BatchAPI --> Files
+    
+    Queue --> Worker1
+    Queue --> Worker2
+    Queue --> Worker3
+    Queue --> Worker4
+    
+    Worker1 --> LB
+    Worker2 --> LB
+    Worker3 --> LB
+    Worker4 --> LB
+    
     LB --> GPU0
     LB --> GPU1
     LB --> GPU2
@@ -127,10 +129,6 @@ graph TB
     LB --> GPU5
     LB --> GPU6
     LB --> GPU7
-    
-    BatchAPI --> LB
-    BatchAPI --> DB
-    BatchAPI --> Files
     
     GPU0 --> Models
     GPU1 --> Models
@@ -145,12 +143,34 @@ graph TB
     classDef lb fill:#f3e5f5
     classDef api fill:#e8f5e8
     classDef storage fill:#fff3e0
+    classDef worker fill:#e8f5e8
+    classDef queue fill:#fff9c4
     
     class GPU0,GPU1,GPU2,GPU3,GPU4,GPU5,GPU6,GPU7 gpu
     class LB lb
     class BatchAPI api
     class DB,Models,Files storage
+    class Worker1,Worker2,Worker3,Worker4 worker
+    class Queue queue
 ```
+
+### Scaling Workers
+
+To run with multiple workers for increased throughput, use the `--scale` option:
+
+```bash
+# Run with 4 workers (recommended for 8-GPU setup)
+docker-compose -f docker-compose-multi-gpu.yml up --scale worker=4
+
+# Or with 12 workers for maximum throughput
+docker-compose -f docker-compose-multi-gpu.yml up --scale worker=12
+```
+
+The worker scaling provides:
+- **Horizontal scaling**: Each worker processes batch jobs independently
+- **Queue-based distribution**: Redis queue distributes jobs across available workers
+- **Load balancing**: Workers share the load across all 8 GPU instances
+- **Fault tolerance**: If a worker fails, other workers continue processing
 
 ## Options
 
@@ -168,7 +188,7 @@ curl http://localhost:8000/v1/completions \
     }'
 
 # Test batch API health
-curl http://localhost:5000/health
+curl http://localhost:8080/health
 ```
 
 ### Pytest
@@ -176,8 +196,8 @@ curl http://localhost:5000/health
 Run individual endpoint tests + 100 calls to openai gpt-nano. We do not have a pytest for GPUs. We advise running the `test_large.py` and `test_api.py` manually to check GPU deployment. Since vLLM is openai compatible, we did not see the need for those test.
 
 ```bash
-# Make sure to have TEST_API_KEY=<openai_api_key> if you want to use a different key for testing
-make test
+# MAKE SURE YOU HAVE TEST_API_KEY set in .env
+docker-compose -f docker-compose.test.yml up --build --scale worker=2
 ```
 
 ### Helper files
@@ -190,7 +210,7 @@ make test
 Recommended to only update the batch-api using this command for CI/CD pipelines.
 
 ```bash
-docker compose up -d --no-deps --build batch-api
+docker compose -f <compose-file> up -d --no-deps --build batch-api
 ```
 
 ## Contribute

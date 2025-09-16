@@ -2,22 +2,50 @@ import os
 import json
 import uuid
 from datetime import datetime, timedelta
-from flask import Blueprint, request, jsonify, current_app
+from typing import Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
 import litellm
 import logging
-from src.models.batch import Batch, db
-from src.models.token_usage import TokenUsage
+import redis.asyncio as redis
+from src.models.batch import (
+    init_db_pool, get_batch, create_batch, cancel_batch as db_cancel_batch,
+    delete_batch as db_delete_batch, get_batches_paginated, get_batches_in_timerange,
+    get_completed_batches_in_timerange, count_batches, count_batches_by_status,
+    get_batch_status_counts, get_request_counts_sum
+)
+from src.auth import verify_api_key_flexible, verify_basic_auth
 from configs import get_config
 
-# After existing imports add service mapping
-from src.services.batch_manager import init_batch_manager as service_init_batch_manager, \
-    GlobalBatchManager as ServiceGlobalBatchManager, recover_incomplete_batches  # noqa: E501
+# Optional fast JSON parser
+try:  # pragma: no cover - performance optimization
+    import orjson as _fastjson  # type: ignore
+except Exception:  # pragma: no cover
+    _fastjson = None
 
-# Re-export service functions/classes so existing code continues to work
-init_batch_manager = service_init_batch_manager  # type: ignore
-GlobalBatchManager = ServiceGlobalBatchManager  # type: ignore
+if _fastjson is not None:
+    def _fast_loads(s: str):  # type: ignore
+        return _fastjson.loads(s)
+else:
+    def _fast_loads(s: str):  # type: ignore
+        return json.loads(s)
 
-batch_bp = Blueprint('batch', __name__)
+# Pydantic models for request validation
+class CreateBatchRequest(BaseModel):
+    input_file_id: str
+    endpoint: str
+    completion_window: Optional[str] = "24h"
+
+class BatchResponse(BaseModel):
+    id: str
+    object: str = "batch"
+    endpoint: str
+    input_file_id: str
+    completion_window: str
+    status: str
+    created_at: Optional[int] = None
+
+router = APIRouter()
 
 # Load configuration
 config = get_config()
@@ -44,160 +72,196 @@ os.environ['OPENAI_API_BASE'] = VLLM_BASE_URL
 os.environ['OPENAI_API_KEY'] = VLLM_API_KEY
 logging.info(f"Configured litellm to use vLLM endpoint: {VLLM_BASE_URL}")
 
-# Global instance of batch manager - will be initialized with app in main.py
-batch_manager = None
+# Configure Redis client for worker communication
+REDIS_URL = config.REDIS_URL if hasattr(config, 'REDIS_URL') else "redis://redis:6379"
+redis_client = redis.from_url(REDIS_URL)
 
 
-def init_batch_manager(app):
-    """Initialize the global batch manager with the Flask app instance"""
-    global batch_manager
-    if batch_manager is None:
-        batch_manager = GlobalBatchManager(app=app, max_workers=MAX_WORKERS, max_concurrent_batches=MAX_CONCURRENT_BATCHES)
-        
-        # Recover any incomplete batches after manager initialization
-        recover_incomplete_batches(app)
-        
-    return batch_manager
+async def length_of_redis_queue():
+    return await redis_client.llen("batch_queue")
 
-@batch_bp.route('/batches', methods=['POST'])
-def create_batch():
+async def add_to_redis_queue(batch_id: str):
+    # Submit batch to Redis queue for worker processing
+    try:
+        # Check current queue length before pushing
+        result = await redis_client.rpush("batch_queue", batch_id)
+        logging.info(f"Successfully submitted batch '{batch_id}' to Redis queue for processing")
+    except Exception as redis_error:
+        logging.error(f"Failed to submit batch '{batch_id}' to Redis queue: {redis_error}")
+        # Update batch status to failed
+        await db_cancel_batch(batch_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to queue batch for processing: {redis_error}"
+        )
+
+@router.post('/batches')
+async def create_batch_route(
+    data: CreateBatchRequest,
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Create a new batch job"""
     try:
-        data = request.get_json()
-        
-        # Validate required fields
-        if not data or 'input_file_id' not in data or 'endpoint' not in data:
-            return jsonify({
-                'error': {
-                    'message': 'Missing required fields: input_file_id and endpoint',
-                    'type': 'invalid_request_error'
-                }
-            }), 400
-        
         # Create new batch
         batch_id = f"batch_{uuid.uuid4().hex}"
-        completion_window = data.get('completion_window', '24h')
         
         # Calculate expires_at (24 hours from now)
-        expires_at = datetime.utcnow() + timedelta(hours=24)
+        created_at = datetime.utcnow()
+        expires_at = created_at + timedelta(hours=24)
         
-        batch = Batch(
-            id=batch_id,
-            object='batch',
-            endpoint=data['endpoint'],
-            input_file_id=data['input_file_id'],
-            completion_window=completion_window,
+        # Create batch using raw SQL
+        await create_batch(
+            batch_id=batch_id,
+            object_type='batch',
+            endpoint=data.endpoint,
+            input_file_id=data.input_file_id,
+            completion_window=data.completion_window,
             status='validating',
-            created_at=datetime.utcnow(),
+            created_at=created_at,
             expires_at=expires_at
         )
         
-        # Set metadata using the property
-        batch.batch_metadata = data.get('metadata', {})
+        await add_to_redis_queue(batch_id)
         
-        db.session.add(batch)
-        db.session.commit()
+        batch = {
+            'id': batch_id,
+            'object': 'batch',
+            'endpoint': data.endpoint,
+            'input_file_id': data.input_file_id,
+            'completion_window': data.completion_window,
+            'status': 'validating',
+            'created_at': int(created_at.timestamp()) if created_at else None
+        }
+        return batch
         
-        # Submit batch to global batch manager for processing
-        if batch_manager is None:
-            # Auto-initialize if not done yet (fallback safety)
-            init_batch_manager(current_app._get_current_object())
-        batch_manager.submit_batch(batch_id)
-        
-        return jsonify(batch.to_dict()), 200
-        
+    except HTTPException:
+        raise  # Re-raise HTTPException as-is
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@batch_bp.route('/batches/<batch_id>', methods=['GET'])
-def get_batch(batch_id):
+@router.get('/batches/{batch_id}')
+async def get_batch_route(
+    batch_id: str,
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Retrieve a specific batch"""
+    print(f"Getting batch {batch_id}")
     try:
-        batch = Batch.query.filter_by(id=batch_id).first()
+        batch = await get_batch(batch_id)
         
         if not batch:
-            return jsonify({
-                'error': {
-                    'message': f'Batch {batch_id} not found',
-                    'type': 'not_found_error'
-                }
-            }), 404
+            raise HTTPException(
+                status_code=404,
+                detail={"message": f'Batch {batch_id} not found', "type": "not_found_error"}
+            )
         
-        return jsonify(batch.to_dict()), 200
+        return batch
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@batch_bp.route('/batches/<batch_id>/cancel', methods=['POST'])
-def cancel_batch(batch_id):
+@router.post('/batches/{batch_id}/cancel')
+async def cancel_batch_route(
+    batch_id: str,
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Cancel a batch job"""
     try:
-        batch = Batch.query.filter_by(id=batch_id).first()
+        batch = await get_batch(batch_id)
         
         if not batch:
-            return jsonify({
-                'error': {
-                    'message': f'Batch {batch_id} not found',
-                    'type': 'not_found_error'
+            raise HTTPException(
+                status_code=404,
+                detail={"message": f'Batch {batch_id} not found', "type": "not_found_error"}
+            )
+        
+        if batch['status'] in ['completed', 'failed', 'cancelled', 'expired']:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f'Cannot cancel batch with status: {batch["status"]}',
+                    "type": "invalid_request_error"
                 }
-            }), 404
+            )
         
-        if batch.status in ['completed', 'failed', 'cancelled', 'expired']:
-            return jsonify({
-                'error': {
-                    'message': f'Cannot cancel batch with status: {batch.status}',
-                    'type': 'invalid_request_error'
-                }
-            }), 400
+        # Update to cancelled status using raw SQL
+        await db_cancel_batch(batch_id)
         
-        batch.status = 'cancelling'
-        batch.cancelled_at = datetime.utcnow()
-        db.session.commit()
+        # Return updated batch data
+        batch = await get_batch(batch_id)
+        return batch
         
-        # Update to cancelled status - the background processing will check this
-        batch.status = 'cancelled'
-        db.session.commit()
-        
-        return jsonify(batch.to_dict()), 200
-        
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@batch_bp.route('/batches/<batch_id>', methods=['DELETE'])
-def delete_batch(batch_id):
+@router.get('/batches/status')
+async def get_batch_system_status(
+    api_key: str = Depends(verify_api_key_flexible)
+):
+    """Get the current status of the batch processing system"""
+    try:
+        # Get Redis queue status
+        try:
+            queue_length = await redis_client.llen("batch_queue")
+            redis_status = "connected"
+        except Exception as redis_error:
+            queue_length = None
+            redis_status = f"error: {redis_error}"
+        
+        # Get database statistics
+        total_batches = await count_batches()
+        active_db_batches = await count_batches_by_status(['in_progress', 'queued'])
+        
+        status = {
+            'redis_status': redis_status,
+            'queue_length': queue_length,
+            'total_batches_in_db': total_batches,
+            'active_batches_in_db': active_db_batches
+        }
+        
+        return status
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
+
+@router.delete('/batches/{batch_id}')
+async def delete_batch_route(
+    batch_id: str,
+    api_key: str = Depends(verify_api_key_flexible)
+):
     """Delete a batch job and its associated data"""
     try:
-        batch = Batch.query.filter_by(id=batch_id).first()
+        batch = await get_batch(batch_id)
         
         if not batch:
-            return jsonify({
-                'error': {
-                    'message': f'Batch {batch_id} not found',
-                    'type': 'not_found_error'
-                }
-            }), 404
-        
-        # Delete associated token usage records
-        TokenUsage.query.filter_by(batch_id=batch_id).delete()
+            raise HTTPException(
+                status_code=404,
+                detail={"message": f'Batch {batch_id} not found', "type": "not_found_error"}
+            )
         
         # Delete the batch files if they exist
         try:
-            input_file_path = f"{UPLOAD_FOLDER}/{batch.input_file_id}"
+            input_file_path = f"{UPLOAD_FOLDER}/{batch['input_file_id']}"
             if not input_file_path.endswith('.jsonl'):
                 input_file_path += '.jsonl'
             if os.path.exists(input_file_path):
@@ -206,97 +270,68 @@ def delete_batch(batch_id):
             logging.warning(f"Failed to delete input file for batch {batch_id}: {file_error}")
         
         try:
-            if batch.output_file_id:
-                output_file_path = f"{UPLOAD_FOLDER}/{batch.output_file_id}.jsonl"
+            if batch.get('output_file_id'):
+                output_file_path = f"{UPLOAD_FOLDER}/{batch['output_file_id']}.jsonl"
                 if os.path.exists(output_file_path):
                     os.remove(output_file_path)
         except Exception as file_error:
             logging.warning(f"Failed to delete output file for batch {batch_id}: {file_error}")
         
-        # Delete the batch record
-        db.session.delete(batch)
-        db.session.commit()
+        # Delete the batch record using raw SQL
+        await db_delete_batch(batch_id)
         
-        return jsonify({
-            'message': f'Batch {batch_id} deleted successfully'
-        }), 200
+        return {"message": f'Batch {batch_id} deleted successfully'}
         
+    except HTTPException:
+        raise
     except Exception as e:
-        db.session.rollback()
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@batch_bp.route('/batches', methods=['GET'])
-def list_batches():
+@router.get('/batches')
+async def list_batches(
+    after: Optional[str] = None,
+    limit: int = 20,
+    user: dict = Depends(verify_basic_auth)
+):
     """List all batches"""
     try:
-        after = request.args.get('after')
-        limit = min(int(request.args.get('limit', 20)), 100)  # Max 100
+        limit = min(limit, 100)  # Max 100
         
-        query = Batch.query.order_by(Batch.created_at.desc())
-        
+        after_created_at = None
         if after:
             # Simple pagination using created_at timestamp
             try:
-                after_batch = Batch.query.filter_by(id=after).first()
-                if after_batch:
-                    query = query.filter(Batch.created_at < after_batch.created_at)
+                after_batch = await get_batch(after)
+                if after_batch and after_batch.get('created_at'):
+                    after_created_at = datetime.fromtimestamp(after_batch['created_at'])
             except:
                 pass
         
-        batches = query.limit(limit).all()
+        batches = await get_batches_paginated(limit, after_created_at)
         
-        return jsonify({
+        return {
             'object': 'list',
-            'data': [batch.to_dict() for batch in batches],
+            'data': batches,
             'has_more': len(batches) == limit
-        }), 200
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@batch_bp.route('/batches/status', methods=['GET'])
-def get_batch_manager_status():
-    """Get the current status of the batch manager"""
-    try:
-        if batch_manager is None:
-            # Auto-initialize if not done yet (fallback safety)
-            init_batch_manager(current_app._get_current_object())
-        status = batch_manager.get_status()
-        
-        # Also get database statistics
-        total_batches = Batch.query.count()
-        active_db_batches = Batch.query.filter(Batch.status.in_(['in_progress', 'queued'])).count()
-        
-        status.update({
-            'total_batches_in_db': total_batches,
-            'active_batches_in_db': active_db_batches
-        })
-        
-        return jsonify(status), 200
-        
-    except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
-
-@batch_bp.route('/batches/analytics/timeline', methods=['GET'])
-def get_batch_timeline():
+@router.get('/analytics/timeline')
+async def get_batch_timeline(
+    user: dict = Depends(verify_basic_auth)
+):
     """Get batch creation analytics for the last 24 hours in 15-minute intervals"""
     try:
-        from sqlalchemy import func
         from datetime import datetime, timedelta
         
         # Calculate 24 hours ago
@@ -304,10 +339,7 @@ def get_batch_timeline():
         start_time = end_time - timedelta(hours=24)
         
         # Get batches created in the last 24 hours
-        batches = Batch.query.filter(
-            Batch.created_at >= start_time,
-            Batch.created_at <= end_time
-        ).all()
+        batches = await get_batches_in_timerange(start_time, end_time)
         
         # Create 15-minute intervals
         intervals = []
@@ -318,7 +350,7 @@ def get_batch_timeline():
             
             # Count batches in this interval
             count = sum(1 for batch in batches 
-                       if current_time <= batch.created_at < interval_end)
+                       if current_time <= datetime.fromtimestamp(batch['created_at']) < interval_end)
             
             intervals.append({
                 'timestamp': current_time.isoformat(),
@@ -333,7 +365,7 @@ def get_batch_timeline():
         avg_per_interval = total_batches / len(intervals) if intervals else 0
         max_in_interval = max(interval['count'] for interval in intervals) if intervals else 0
         
-        return jsonify({
+        return {
             'object': 'batch_timeline',
             'intervals': intervals,
             'summary': {
@@ -345,44 +377,30 @@ def get_batch_timeline():
                     'end': end_time.isoformat()
                 }
             }
-        }), 200
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@batch_bp.route('/batches/analytics/tokens', methods=['GET'])
-def get_token_analytics():
+@router.get('/analytics/tokens')
+async def get_token_analytics(
+    user: dict = Depends(verify_basic_auth)
+):
     """Get token usage analytics for the last 24 hours in 15-minute intervals"""
     try:
-        from sqlalchemy import func
         from datetime import datetime, timedelta
         
         # Calculate 24 hours ago
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=24)
         
-        # Get completed batches in the last 24 hours with their token usage and duration
-        batches_with_tokens = db.session.query(
-            Batch.completed_at,
-            Batch.created_at,
-            Batch.in_progress_at,
-            func.sum(TokenUsage.prompt_tokens).label('input_tokens'),
-            func.sum(TokenUsage.completion_tokens).label('output_tokens'),
-            func.sum(TokenUsage.total_tokens).label('total_tokens')
-        ).join(
-            TokenUsage, Batch.id == TokenUsage.batch_id
-        ).filter(
-            Batch.completed_at >= start_time,
-            Batch.completed_at <= end_time,
-            Batch.completed_at.isnot(None),
-            Batch.in_progress_at.isnot(None),
-            Batch.created_at.isnot(None)
-        ).group_by(Batch.id, Batch.completed_at, Batch.in_progress_at, Batch.created_at).all()
+        # Get completed batches in the last 24 hours
+        completed_batches = await get_completed_batches_in_timerange(start_time, end_time)
         
         # Create 15-minute intervals
         intervals = []
@@ -396,15 +414,19 @@ def get_token_analytics():
             output_tokens = 0
             total_duration = 0
             batch_count = 0
+            request_completed = 0
             
-            for batch_data in batches_with_tokens:
-                if batch_data.completed_at and current_time <= batch_data.completed_at < interval_end:
-                    input_tokens += batch_data.input_tokens or 0
-                    output_tokens += batch_data.output_tokens or 0
+            for b in completed_batches:
+                if b.get('completed_at') and current_time <= datetime.fromtimestamp(b['completed_at']) < interval_end:
+                    input_tokens += b.get('prompt_tokens') or 0
+                    output_tokens += b.get('completion_tokens') or 0
+                    request_completed += b.get('request_completed') or 0
                     
                     # Calculate duration for this batch
-                    if batch_data.in_progress_at and batch_data.completed_at:
-                        duration = batch_data.completed_at - batch_data.in_progress_at
+                    if b.get('in_progress_at') and b.get('completed_at'):
+                        in_progress_time = datetime.fromtimestamp(b['in_progress_at'])
+                        completed_time = datetime.fromtimestamp(b['completed_at'])
+                        duration = completed_time - in_progress_time
                         total_duration += duration.total_seconds()
                         batch_count += 1
             
@@ -413,6 +435,7 @@ def get_token_analytics():
                 'input_tokens': input_tokens,
                 'output_tokens': output_tokens,
                 'total_tokens': input_tokens + output_tokens,
+                'request_completed': request_completed,
                 'duration_seconds': total_duration,
                 'avg_duration_seconds': total_duration / batch_count if batch_count > 0 else 0,
                 'batch_count': batch_count,
@@ -427,11 +450,12 @@ def get_token_analytics():
         total_tokens = total_input_tokens + total_output_tokens
         total_duration = sum(interval['duration_seconds'] for interval in intervals)
         total_batches = sum(interval['batch_count'] for interval in intervals)
+        total_request_completed = sum(interval['request_completed'] for interval in intervals)
         avg_per_interval = total_tokens / len(intervals) if intervals else 0
         peak_interval = max(interval['total_tokens'] for interval in intervals) if intervals else 0
         avg_duration = total_duration / total_batches if total_batches > 0 else 0
         
-        return jsonify({
+        return {
             'object': 'token_timeline',
             'intervals': intervals,
             'summary': {
@@ -441,6 +465,7 @@ def get_token_analytics():
                 'total_duration_seconds': total_duration,
                 'avg_duration_seconds': round(avg_duration, 2),
                 'total_batches': total_batches,
+                'total_request_completed': total_request_completed,
                 'avg_per_interval': round(avg_per_interval, 2),
                 'peak_interval': peak_interval,
                 'time_range': {
@@ -448,50 +473,28 @@ def get_token_analytics():
                     'end': end_time.isoformat()
                 }
             }
-        }), 200
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
-@batch_bp.route('/batches/<batch_id>/token_usage', methods=['GET'])
-def get_batch_token_usage(batch_id):
-    """Get token usage statistics for a specific batch"""
-    try:
-        batch = Batch.query.filter_by(id=batch_id).first()
-        
-        if not batch:
-            return jsonify({
-                'error': {
-                    'message': f'Batch {batch_id} not found',
-                    'type': 'not_found_error'
-                }
-            }), 404
-        
-        # Get token usage summary
-        token_summary = TokenUsage.get_batch_summary(batch_id)
-        
-        return jsonify(token_summary), 200
-        
-    except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
 
-@batch_bp.route('/batches/dashboard', methods=['GET'])
-def get_batches_dashboard():
+@router.get('/dashboard')
+async def get_batches_dashboard(
+    page: int = 1,
+    limit: int = 10,
+    user: dict = Depends(verify_basic_auth)
+):
     """Get dashboard view of batches with pagination, token usage, and error rates"""
     try:
         # Get pagination parameters
-        page = max(int(request.args.get('page', 1)), 1)
-        limit = min(int(request.args.get('limit', 10)), 50)  # Max 50 batches per page
+        page = max(page, 1)
+        limit = min(limit, 50)  # Max 50 batches per page
         offset = (page - 1) * limit
         
         # Filter batches to the same 24-hour window as analytics graphs for consistency
@@ -499,102 +502,92 @@ def get_batches_dashboard():
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=24)
         
-        # Get batches from the last 24 hours with pagination
-        base_query = Batch.query.filter(
-            Batch.created_at >= start_time,
-            Batch.created_at <= end_time
-        ).order_by(Batch.created_at.desc())
+        # Get batches from the last 24 hours
+        all_batches_in_window = await get_batches_in_timerange(start_time, end_time)
         
-        total_batches = base_query.count()
-        batches = base_query.offset(offset).limit(limit).all()
+        # Calculate pagination
+        total_batches = len(all_batches_in_window)
+        batches = all_batches_in_window[offset:offset + limit]
         
         # Prepare dashboard data
         dashboard_batches = []
         for batch in batches:
-            # Get token usage summary for this batch
-            token_summary = TokenUsage.get_batch_summary(batch.id)
-            
             # Calculate error rate
-            request_counts = batch.request_counts
-            total_requests = request_counts.get('total', 0)
-            failed_requests = request_counts.get('failed', 0)
+            total_requests = batch.get('request_total') or 0
+            failed_requests = batch.get('request_failed') or 0
+
             error_rate = (failed_requests / total_requests * 100) if total_requests > 0 else 0
             
             # Build batch dashboard entry
             batch_data = {
-                'id': batch.id,
-                'status': batch.status,
-                'endpoint': batch.endpoint,
-                'created_at': batch.created_at.isoformat() if batch.created_at else None,
-                'completed_at': batch.completed_at.isoformat() if batch.completed_at else None,
+                'id': batch['id'],
+                'status': batch['status'],
+                'endpoint': batch['endpoint'],
+                'created_at': datetime.fromtimestamp(batch['created_at']).isoformat() if batch.get('created_at') else None,
+                'completed_at': datetime.fromtimestamp(batch['completed_at']).isoformat() if batch.get('completed_at') else None,
                 'duration_seconds': None,
-                'request_counts': request_counts,
+                'request_counts': {
+                    'total': batch.get('request_total') or 0,
+                    'completed': batch.get('request_completed') or 0,
+                    'failed': batch.get('request_failed') or 0
+                },
                 'error_rate_percentage': round(error_rate, 2),
                 'token_usage': {
-                    'total_tokens': token_summary.get('total_tokens', 0),
-                    'prompt_tokens': token_summary.get('prompt_tokens', 0),
-                    'completion_tokens': token_summary.get('completion_tokens', 0),
-                    'total_cost': token_summary.get('total_cost', 0.0),
-                    'request_count': token_summary.get('request_count', 0)
+                    'total_tokens': batch.get('total_tokens') or 0,
+                    'prompt_tokens': batch.get('prompt_tokens') or 0,
+                    'completion_tokens': batch.get('completion_tokens') or 0,
+                    'total_cost': 0.0,  # Cost calculation removed
+                    'request_count': batch.get('request_total') or 0
                 }
             }
             
             # Calculate duration if both timestamps are available
-            if batch.in_progress_at and batch.completed_at:
-                duration = batch.completed_at - batch.in_progress_at
+            if batch.get('in_progress_at') and batch.get('completed_at'):
+                in_progress_time = datetime.fromtimestamp(batch['in_progress_at'])
+                completed_time = datetime.fromtimestamp(batch['completed_at'])
+                duration = completed_time - in_progress_time
                 batch_data['duration_seconds'] = duration.total_seconds()
             
             dashboard_batches.append(batch_data)
         
-        # Calculate overall statistics (limited to same 24-hour window for consistency)
-        from sqlalchemy import func
+        # Calculate overall statistics
+        overall_total_tokens = 0
+        overall_prompt_tokens = 0
+        overall_completion_tokens = 0
+        overall_total_cost = 0.0
+        overall_total_requests = 0
+        overall_total_request_completed = 0
+        for b in all_batches_in_window:
+            overall_total_tokens += b.get('total_tokens') or 0
+            overall_prompt_tokens += b.get('prompt_tokens') or 0
+            overall_completion_tokens += b.get('completion_tokens') or 0
+            overall_total_cost += 0.0  # Cost calculation removed
+            overall_total_requests += b.get('request_total') or 0
+            overall_total_request_completed += b.get('request_completed') or 0
         
-        # Overall token usage across batches in the 24-hour window
-        overall_tokens = db.session.query(
-            func.sum(TokenUsage.total_tokens).label('total_tokens'),
-            func.sum(TokenUsage.prompt_tokens).label('prompt_tokens'),
-            func.sum(TokenUsage.completion_tokens).label('completion_tokens'),
-            func.sum(TokenUsage.cost).label('total_cost'),
-            func.count(TokenUsage.id).label('total_requests')
-        ).join(Batch, TokenUsage.batch_id == Batch.id).filter(
-            Batch.created_at >= start_time,
-            Batch.created_at <= end_time
-        ).first()
+        # Get batch status counts
+        status_counts = {}
+        for batch in all_batches_in_window:
+            status = batch['status']
+            status_counts[status] = status_counts.get(status, 0) + 1
         
-        # Overall batch statistics (within 24-hour window)
-        status_stats = db.session.query(
-            Batch.status,
-            func.count(Batch.id).label('count')
-        ).filter(
-            Batch.created_at >= start_time,
-            Batch.created_at <= end_time
-        ).group_by(Batch.status).all()
-        
-        # Calculate overall error rate (within 24-hour window)
-        overall_request_counts = db.session.query(
-            func.sum(func.json_extract(Batch.request_counts_json, '$.total')).label('total_requests'),
-            func.sum(func.json_extract(Batch.request_counts_json, '$.failed')).label('failed_requests')
-        ).filter(
-            Batch.created_at >= start_time,
-            Batch.created_at <= end_time
-        ).first()
-        
+        # Calculate overall fail rate
+        total_requests_sum, failed_requests_sum = await get_request_counts_sum(start_time, end_time)
         overall_error_rate = 0
-        if overall_request_counts.total_requests and overall_request_counts.total_requests > 0:
-            overall_error_rate = (overall_request_counts.failed_requests or 0) / overall_request_counts.total_requests * 100
+        if total_requests_sum > 0:
+            overall_error_rate = (failed_requests_sum / total_requests_sum) * 100
         
         # Build summary statistics
         summary = {
             'total_batches': total_batches,
-            'batches_by_status': {status: count for status, count in status_stats},
+            'batches_by_status': status_counts,
             'overall_error_rate_percentage': round(overall_error_rate, 2),
-            'overall_token_usage': {
-                'total_tokens': overall_tokens.total_tokens or 0,
-                'prompt_tokens': overall_tokens.prompt_tokens or 0,
-                'completion_tokens': overall_tokens.completion_tokens or 0,
-                'total_cost': float(overall_tokens.total_cost or 0.0),
-                'total_requests': overall_tokens.total_requests or 0
-            }
+            'total_tokens': overall_total_tokens,
+            'prompt_tokens': overall_prompt_tokens,
+            'completion_tokens': overall_completion_tokens,
+            'total_cost': float(overall_total_cost),
+            'total_requests': overall_total_requests,
+            'total_request_completed': overall_total_request_completed
         }
         
         # Pagination info
@@ -608,34 +601,40 @@ def get_batches_dashboard():
             'prev_page': page - 1 if page > 1 else None
         }
         
-        return jsonify({
+        return {
             'object': 'dashboard',
             'batches': dashboard_batches,
             'summary': summary,
             'pagination': pagination
-        }), 200
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'error': {
-                'message': str(e),
-                'type': 'server_error'
-            }
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "type": "server_error"}
+        )
 
 def process_single_request(request_line, batch_id=None):
     """Process a single request line and return the result"""
     try:
-        request_data = json.loads(request_line.strip())
+        # Use fastest available JSON loader
+        request_data = _fast_loads(request_line) if request_line and request_line.strip() else {}
         
         try:
-            # Use litellm for completion (synchronous version)
-            extra_kwargs = {i:j for i,j in request_data['body'].items() if i not in ['model', 'messages']}
-            response = litellm.completion(
-                model=request_data['body']['model'],
-                messages=request_data['body']['messages'],
-                **extra_kwargs
-            )
+            # Use litellm for completion (synchronous version) - unpack body directly to avoid intermediate dicts
+            body = request_data['body']
+            model = body['model']
+            messages = body['messages']
+            ll_completion = litellm.completion
+            if len(body) == 2:
+                response = ll_completion(model=model, messages=messages)
+            else:
+                # Avoid building a new dict; pass known keys directly and the rest via generator-comprehension
+                # Build kwargs minimally
+                extra_kwargs = {k: v for k, v in body.items() if k not in ('model', 'messages')}
+                response = ll_completion(model=model, messages=messages, **extra_kwargs)
             
             result = {
                 "id": f"batch_req_{uuid.uuid4().hex}",
@@ -648,23 +647,20 @@ def process_single_request(request_line, batch_id=None):
                 "error": None
             }
             
-            # Track token usage if batch_id is provided
+            # Track token usage as an aggregate dict if batch_id is provided
             if batch_id:
                 try:
-                    # Extract token costs from response
-                    usage = response.usage if hasattr(response, 'usage') else None
-                    # Usage(completion_tokens=79, prompt_tokens=12, total_tokens=91
-                    
-                    token_usage = TokenUsage(
-                        batch_id=batch_id,
-                        request_id=result['id'],
-                        custom_id=request_data['custom_id'],
-                        model=request_data['body']['model'],
-                        total_tokens=usage.total_tokens if usage else 0,
-                        prompt_tokens=usage.prompt_tokens if usage else 0,
-                        completion_tokens=usage.completion_tokens if usage else 0,
-                    )
-                    result['_token_usage'] = token_usage
+                    usage = getattr(response, 'usage', None)
+                    result['_token_usage'] = {
+                        'batch_id': batch_id,
+                        'request_id': result['id'],
+                        'custom_id': request_data.get('custom_id'),
+                        'model': request_data['body'].get('model'),
+                        'total_tokens': getattr(usage, 'total_tokens', 0) or 0,
+                        'prompt_tokens': getattr(usage, 'prompt_tokens', 0) or 0,
+                        'completion_tokens': getattr(usage, 'completion_tokens', 0) or 0,
+                        'cost': 0.0
+                    }
                 except Exception as token_error:
                     logging.warning(f"Failed to track token usage for request {result['id']}: {token_error}")
             
