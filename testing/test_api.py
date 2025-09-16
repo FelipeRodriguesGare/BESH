@@ -13,8 +13,12 @@ user_prompt = "Hello"
 system_prompt = "You are a helpful assistant."
 
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:5000/v1")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8080/v1")
 MODEL = os.getenv("MODEL_NAME", 'openai/gpt-4.1-nano')
+
+# Try all three header styles: X-API-Key, Api-Key, and Authorization: Bearer <key>
+API_KEY_HEADER = os.getenv("API_KEY_HEADER", "test")
+headers = {"X-API-Key": API_KEY_HEADER}
 
 def test_file_upload():
     """Test file upload functionality"""
@@ -56,7 +60,7 @@ def test_file_upload():
         with open('/tmp/test_batch.jsonl', 'rb') as f:
             files = {'file': f}
             data = {'purpose': 'batch'}
-            response = requests.post(f"{BASE_URL}/files", files=files, data=data)
+            response = requests.post(f"{BASE_URL}/files", files=files, data=data, headers=headers)
         
         if response.status_code == 200:
             file_info = response.json()
@@ -77,11 +81,10 @@ def test_create_batch(file_id):
         "input_file_id": file_id,
         "endpoint": "/v1/chat/completions",
         "completion_window": "24h",
-        "metadata": {"test": "true"}
     }
     
     try:
-        response = requests.post(f"{BASE_URL}/batches", json=batch_data)
+        response = requests.post(f"{BASE_URL}/batches", json=batch_data, headers=headers)
         
         if response.status_code == 200:
             batch_info = response.json()
@@ -99,7 +102,7 @@ def test_get_batch(batch_id):
     print("Testing batch retrieval...")
     
     try:
-        response = requests.get(f"{BASE_URL}/batches/{batch_id}")
+        response = requests.get(f"{BASE_URL}/batches/{batch_id}", headers=headers)
         
         if response.status_code == 200:
             batch_info = response.json()
@@ -117,7 +120,7 @@ def test_list_batches():
     print("Testing batch listing...")
     
     try:
-        response = requests.get(f"{BASE_URL}/batches")
+        response = requests.get(f"{BASE_URL}/batches", headers=headers)
         
         if response.status_code == 200:
             batches = response.json()
@@ -136,7 +139,7 @@ def test_dashboard():
     
     try:
         # Test basic dashboard
-        response = requests.get(f"{BASE_URL}/batches/dashboard")
+        response = requests.get(f"{BASE_URL}/batches/dashboard", headers=headers)
         
         if response.status_code == 200:
             dashboard = response.json()
@@ -182,7 +185,7 @@ def test_dashboard_pagination():
     
     try:
         # Test with pagination parameters
-        response = requests.get(f"{BASE_URL}/batches/dashboard?page=1&limit=5")
+        response = requests.get(f"{BASE_URL}/batches/dashboard?page=1&limit=5", headers=headers)
         
         if response.status_code == 200:
             dashboard = response.json()
