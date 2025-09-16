@@ -14,20 +14,9 @@ if os.getenv('TESTING') == 'active':
 class Config:
     """Base configuration class"""
     
-    # Flask Configuration
-    SECRET_KEY = os.getenv('SECRET_KEY', 'you_should_replace_this')
-    FLASK_HOST = os.getenv('FLASK_HOST', '0.0.0.0')
-    FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
-    FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
-    
     # Database Configuration
     BASE_DIR = Path(__file__).parent.parent
-    db_path = BASE_DIR / 'src' / 'database' / 'app.db'
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        'SQLALCHEMY_DATABASE_URI', 
-        f"sqlite:///{db_path.as_posix()}"
-    )
-    SQLALCHEMY_TRACK_MODIFICATIONS = os.getenv('SQLALCHEMY_TRACK_MODIFICATIONS', 'False').lower() == 'true'
+    SQLALCHEMY_DATABASE_URI = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///:memory:')
     
     # File Upload Configuration
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', '/tmp/batch_files').rstrip('/')
@@ -53,48 +42,8 @@ class Config:
     TENSOR_PARALLEL_SIZE = int(os.getenv('TENSOR_PARALLEL_SIZE', 1))
     
     # API Configuration
-    API_PORT = int(os.getenv('API_PORT', 5000))
-    
-    @classmethod
-    def init_app(cls, app):
-        """Initialize Flask app with configuration"""
-        app.config.from_object(cls)
-        
-        # Ensure upload folder exists
-        os.makedirs(cls.UPLOAD_FOLDER, exist_ok=True)
-        
-        # Set environment variables for libraries that need them
-        os.environ['OPENAI_API_BASE'] = cls.OPENAI_API_BASE
-        os.environ['OPENAI_API_KEY'] = cls.OPENAI_API_KEY
+    API_PORT = int(os.getenv('API_PORT', 8080))
 
-class DevelopmentConfig(Config):
-    """Development configuration"""
-    FLASK_DEBUG = True
-
-class ProductionConfig(Config):
-    """Production configuration"""
-    FLASK_DEBUG = False
-    
-    # Override with more secure production settings
-    SECRET_KEY = os.getenv('SECRET_KEY')
-    if not SECRET_KEY:
-        raise ValueError("SECRET_KEY must be set in production environment")
-
-class TestingConfig(Config):
-    """Testing configuration"""
-    TESTING = True
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
-
-# Configuration dictionary
-config = {
-    'development': DevelopmentConfig,
-    'production': ProductionConfig,
-    'testing': TestingConfig,
-    'default': DevelopmentConfig
-}
-
-def get_config(config_name=None):
+def get_config():
     """Get configuration object by name"""
-    if config_name is None:
-        config_name = os.getenv('FLASK_ENV', 'development')
-    return config.get(config_name, DevelopmentConfig)
+    return Config()
