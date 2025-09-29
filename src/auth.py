@@ -1,7 +1,6 @@
 """Authentication middleware for protecting endpoints."""
 
 import os
-import base64
 import secrets
 from typing import Optional
 from fastapi import HTTPException, Depends, status, Request
@@ -12,20 +11,29 @@ security_basic = HTTPBasic()
 security_bearer = HTTPBearer()
 
 
+# Check if environment variables are set
+if os.environ.get('BASIC_AUTH_USERNAME') is None:
+    raise ValueError("BASIC_AUTH_USERNAME must be set, it is required for basic authentication")
+if os.environ.get('BASIC_AUTH_PASSWORD') is None:
+    raise ValueError("BASIC_AUTH_PASSWORD must be set, it is required for basic authentication")
+if os.environ.get('API_KEY') is None:
+    raise ValueError("API_KEY must be set, it is required for API key authentication")
+
+
 class Auth:
     """Authentication utilities class."""
     
     @staticmethod
     def get_basic_auth_credentials():
         """Get basic auth credentials from environment variables."""
-        username = os.environ.get('BASIC_AUTH_USERNAME', 'admin')
-        password = os.environ.get('BASIC_AUTH_PASSWORD', 'admin123')
+        username = os.environ.get('BASIC_AUTH_USERNAME')
+        password = os.environ.get('BASIC_AUTH_PASSWORD')
         return username, password
     
     @staticmethod
     def get_api_key():
         """Get API key from environment variables."""
-        return os.environ.get('API_KEY', 'your-secret-api-key')
+        return os.environ.get('API_KEY')
     
     @staticmethod
     def verify_basic_auth(username: str, password: str) -> bool:

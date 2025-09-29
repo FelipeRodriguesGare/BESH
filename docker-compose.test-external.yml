@@ -47,8 +47,8 @@ services:
       - PYTHONPATH=/app
       - SQLALCHEMY_DATABASE_URI=postgresql+psycopg://batch:testtest@postgres:5432/batch
       - REDIS_URL=redis://redis:6379
-      - MODEL_NAME=openai/gpt-4.1-nano
-      - OPENAI_API_BASE=https://api.openai.com/v1
+      - MODEL_NAME=this_name_is_not_used
+      - OPENAI_API_BASE=also_not_used
       - OPENAI_API_KEY=none
       - MAX_WORKERS=15
       - MAX_CONCURRENT_BATCHES=3
@@ -77,13 +77,12 @@ services:
     environment:
       - PYTHONPATH=/app
       - UPLOAD_FOLDER=/tmp/batch_files
-      - OPENAI_API_BASE=https://api.openai.com/v1
       - SQLALCHEMY_DATABASE_URI=postgresql+psycopg://batch:testtest@postgres:5432/batch
       - REDIS_URL=redis://redis:6379
-      - OPENAI_API_KEY=none
-      - TEST_API_KEY=${TEST_API_KEY}
       - MAX_WORKERS=10
-      - TESTING=active
+      - OPENAI_API_BASE=${EXTERNAL_API_BASE}
+      - OPENAI_API_KEY=${EXTERNAL_API_KEY}
+      - MODEL_NAME=${EXTERNAL_MODEL_NAME}
     volumes:
       - uploads_data:/tmp/batch_files
     depends_on:
@@ -121,8 +120,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - BASE_URL=http://batch-api-test:8080/v1
-      - MODEL_NAME=openai/gpt-4.1-nano
-      - OPENAI_API_BASE=https://api.openai.com/v1
+      - MODEL_NAME=this_name_is_not_used
       - TESTING=active
       - API_KEY_HEADER=test
     command: ["pytest", "testing", "-v", "--color=yes"]
