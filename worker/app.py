@@ -35,6 +35,7 @@ os.environ['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY', 'dummy-key')
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379')
 MAX_WORKERS = int(os.getenv('MAX_WORKERS', '128'))
+MODEL_NAME = os.getenv('MODEL_NAME', '')
 
 # Override OPENAI_API_KEY with TEST_API_KEY if set
 if os.getenv('TESTING') == 'active':
@@ -283,6 +284,10 @@ class FileProcessor:
                 body = request_data['body']
                 model = body.get('model')
                 messages = body.get('messages')
+
+                # Override model name if set
+                if MODEL_NAME:
+                    model = MODEL_NAME
                 
                 # Use async litellm for completion
                 if len(body) == 2:
