@@ -40,41 +40,41 @@ services:
       retries: 3
 
   # vLLM service for serving LLM models
-  vllm:
+  # vllm:
 
-    image: vllm/vllm-openai:latest
-    container_name: vllm-server
-    platform: linux/amd64
-    ports:
-      - "8000:8000"
-    volumes:
-      - vllm_models:/root/.cache/huggingface
-    environment:
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    command: [
-      "--model", "${MODEL_NAME}",
-      "--host", "0.0.0.0",
-      "--port", "8000",
-      "--tensor-parallel-size", "1",
-      "--max-model-len", "32000",
-    ]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+  #   image: vllm/vllm-openai:latest
+  #   container_name: vllm-server
+  #   platform: linux/amd64
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - vllm_models:/root/.cache/huggingface
+  #   environment:
+  #     - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+  #   command: [
+  #     "--model", "${MODEL_NAME}",
+  #     "--host", "0.0.0.0",
+  #     "--port", "8000",
+  #     "--tensor-parallel-size", "1",
+  #     "--max-model-len", "32000",
+  #   ]
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
 
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    restart: unless-stopped
-    networks:
-      - batch-network
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 60s
+  #   restart: unless-stopped
+  #   networks:
+  #     - batch-network
 
   # Batch API service
   batch-api:
@@ -87,22 +87,25 @@ services:
     volumes:
       # OPTIONAL: Mount local development directory
       # - <your_local_directory>/<repo_name>:/app
-      - batch_files:/tmp/batch_files
-      - ./logs:/app/logs
+      - ${PWD}/batch_files:/tmp/batch_files
+      - ${PWD}/logs:/app/logs
     environment:
-      - OPENAI_API_BASE=http://vllm:8000/v1
-      - OPENAI_API_KEY=dummy-key
+      - OPENAI_API_BASE=${NEBIUS_API_BASE}
+      - OPENAI_API_KEY=${NEBIUS_API_KEY}
       - UPLOAD_FOLDER=/tmp/batch_files
       - PYTHONPATH=/app
       - SQLALCHEMY_DATABASE_URI=postgresql+psycopg://replace_with_your_username:replace_with_your_password@postgres:5432/batch
       - REDIS_URL=redis://redis:6379
       - DB_POOL_SIZE=20
       - DB_MAX_OVERFLOW=200
+      - BASIC_AUTH_USERNAME=testing
+      - BASIC_AUTH_PASSWORD=test
+      - API_KEY=123aabbcc
     depends_on:
       postgres:
         condition: service_healthy
-      vllm:
-        condition: service_healthy
+      # vllm:
+        # condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -123,7 +126,8 @@ services:
     environment:
       - PYTHONPATH=/app
       - UPLOAD_FOLDER=/tmp/batch_files
-      - OPENAI_API_BASE=http://vllm:8000/v1
+      - OPENAI_API_BASE=${NEBIUS_API_BASE}
+      - OPENAI_API_KEY=${NEBIUS_API_KEY}
       - SQLALCHEMY_DATABASE_URI=postgresql+psycopg://replace_with_your_username:replace_with_your_password@postgres:5432/batch
       - REDIS_URL=redis://redis:6379
       - MAX_WORKERS=64
@@ -134,7 +138,7 @@ services:
       - WORKER_CONCURRENCY=16
       - BATCH_SIZE=32
     volumes:
-      - batch_files:/tmp/batch_files
+      - ${PWD}/batch_files:/tmp/batch_files
     depends_on:
       postgres:
         condition: service_healthy

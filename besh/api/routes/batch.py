@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 import logging
 import redis.asyncio as redis
-from src.models.batch import (
+from besh.api.models.batch import (
     init_db_pool,
     get_batch,
     create_batch,
@@ -21,8 +21,10 @@ from src.models.batch import (
     get_batch_status_counts,
     get_request_counts_sum,
 )
-from src.auth import verify_api_key_flexible, verify_basic_auth
-from configs import get_config
+from besh.api.auth import verify_api_key_flexible, verify_basic_auth
+from besh.api.app import get_app_config, get_app_storage
+from besh.storage import StorageInterface
+from besh.exceptions import StorageNotFoundError
 
 # Optional fast JSON parser
 try:  # pragma: no cover - performance optimization
@@ -60,41 +62,39 @@ class BatchResponse(BaseModel):
 
 router = APIRouter()
 
-# Load configuration
-config = get_config()
-
-# Use configuration values
-UPLOAD_FOLDER = config.UPLOAD_FOLDER
-
-
-# Configure ThreadPoolExecutor
-MAX_WORKERS = config.MAX_WORKERS
-MAX_CONCURRENT_BATCHES = config.MAX_CONCURRENT_BATCHES
-
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logger = logging.getLogger(__name__)
 
-# Configure Redis client for worker communication
-REDIS_URL = config.REDIS_URL if hasattr(config, "REDIS_URL") else "redis://redis:6379"
-redis_client = redis.from_url(REDIS_URL)
+# Redis client (will be initialized on first use)
+_redis_client = None
+
+
+async def get_redis_client():
+    """Get or create Redis client"""
+    global _redis_client
+    if _redis_client is None:
+        config = get_app_config()
+        _redis_client = redis.from_url(config.redis_url)
+        logger.info(f"Redis client initialized: {config.redis_url}")
+    return _redis_client
 
 
 async def length_of_redis_queue():
+    redis_client = await get_redis_client()
     return await redis_client.llen("batch_queue")
 
 
 async def add_to_redis_queue(batch_id: str):
     # Submit batch to Redis queue for worker processing
     try:
+        redis_client = await get_redis_client()
         # Check current queue length before pushing
         result = await redis_client.rpush("batch_queue", batch_id)
-        logging.info(
+        logger.info(
             f"Successfully submitted batch '{batch_id}' to Redis queue for processing"
         )
     except Exception as redis_error:
-        logging.error(
+        logger.error(
             f"Failed to submit batch '{batch_id}' to Redis queue: {redis_error}"
         )
         # Update batch status to failed
@@ -229,6 +229,7 @@ async def get_batch_system_status(api_key: str = Depends(verify_api_key_flexible
     try:
         # Get Redis queue status
         try:
+            redis_client = await get_redis_client()
             queue_length = await redis_client.llen("batch_queue")
             redis_status = "connected"
         except Exception as redis_error:
@@ -258,7 +259,9 @@ async def get_batch_system_status(api_key: str = Depends(verify_api_key_flexible
 
 @router.delete("/batches/{batch_id}")
 async def delete_batch_route(
-    batch_id: str, api_key: str = Depends(verify_api_key_flexible)
+    batch_id: str,
+    api_key: str = Depends(verify_api_key_flexible),
+    storage: StorageInterface = Depends(get_app_storage),
 ):
     """Delete a batch job and its associated data"""
     try:
@@ -273,25 +276,23 @@ async def delete_batch_route(
                 },
             )
 
-        # Delete the batch files if they exist
+        # Delete the batch files if they exist using storage interface
         try:
-            input_file_path = f"{UPLOAD_FOLDER}/{batch['input_file_id']}"
-            if not input_file_path.endswith(".jsonl"):
-                input_file_path += ".jsonl"
-            if os.path.exists(input_file_path):
-                os.remove(input_file_path)
+            input_file_id = batch["input_file_id"]
+            if await storage.exists(input_file_id):
+                await storage.delete(input_file_id)
         except Exception as file_error:
-            logging.warning(
+            logger.warning(
                 f"Failed to delete input file for batch {batch_id}: {file_error}"
             )
 
         try:
             if batch.get("output_file_id"):
-                output_file_path = f"{UPLOAD_FOLDER}/{batch['output_file_id']}.jsonl"
-                if os.path.exists(output_file_path):
-                    os.remove(output_file_path)
+                output_file_id = batch["output_file_id"]
+                if await storage.exists(output_file_id):
+                    await storage.delete(output_file_id)
         except Exception as file_error:
-            logging.warning(
+            logger.warning(
                 f"Failed to delete output file for batch {batch_id}: {file_error}"
             )
 

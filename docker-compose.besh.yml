@@ -1,0 +1,128 @@
+version: '3.8'
+
+# New docker-compose using BESH CLI package
+# This replaces the old separate API + worker containers with unified besh commands
+
+services:
+
+  # Postgres database (shared)
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=replace_with_your_username
+      - POSTGRES_PASSWORD=replace_with_your_password
+      - POSTGRES_DB=batch
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U replace_with_your_username -d batch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - batch-network
+
+  # Redis for caching and queuing
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - batch-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # BESH combined service (API + Workers using CLI)
+  besh-combined:
+    build:
+      context: .
+      dockerfile: Dockerfile.besh
+    container_name: besh-combined
+    ports:
+      - "8080:8080"
+    volumes:
+      - ${PWD}/batch_files:/tmp/batch_files
+      - ${PWD}/logs:/app/logs
+    environment:
+      # BESH Configuration (using BESH_ prefix)
+      - BESH_HOST=0.0.0.0
+      - BESH_PORT=8080
+      - BESH_API_WORKERS=2
+      - BESH_BATCH_WORKERS=4
+      - BESH_STORAGE_BACKEND=local
+      - BESH_UPLOAD_FOLDER=/tmp/batch_files
+      - BESH_DATABASE_URL=postgresql://replace_with_your_username:replace_with_your_password@postgres:5432/batch
+      - BESH_REDIS_URL=redis://redis:6379
+      - BESH_OPENAI_API_BASE=${NEBIUS_API_BASE}
+      - BESH_OPENAI_API_KEY=${NEBIUS_API_KEY}
+      - BESH_MAX_WORKERS=64
+      - BESH_DB_POOL_SIZE=20
+      - BESH_DB_MAX_OVERFLOW=200
+      - BESH_BASIC_AUTH_USERNAME=testing
+      - BESH_BASIC_AUTH_PASSWORD=test
+      - BESH_API_KEY=123aabbcc
+    command: ["besh", "serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - batch-network
+
+  # Optional: Run workers separately for independent scaling
+  # Uncomment to use separate worker scaling
+  # besh-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.besh
+  #   environment:
+  #     - BESH_DATABASE_URL=postgresql://replace_with_your_username:replace_with_your_password@postgres:5432/batch
+  #     - BESH_REDIS_URL=redis://redis:6379
+  #     - BESH_STORAGE_BACKEND=local
+  #     - BESH_UPLOAD_FOLDER=/tmp/batch_files
+  #     - BESH_OPENAI_API_BASE=${NEBIUS_API_BASE}
+  #     - BESH_OPENAI_API_KEY=${NEBIUS_API_KEY}
+  #     - BESH_MAX_WORKERS=64
+  #   command: ["besh", "worker", "--workers", "4"]
+  #   volumes:
+  #     - ${PWD}/batch_files:/tmp/batch_files
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   networks:
+  #     - batch-network
+  #   restart: unless-stopped
+  #   # Scale with: docker-compose up --scale besh-worker=8
+
+networks:
+  batch-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  batch_files:
+    driver: local
+  redis_data:
+    driver: local
+

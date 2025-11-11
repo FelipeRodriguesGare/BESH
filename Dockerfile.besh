@@ -1,0 +1,42 @@
+# Dockerfile for BESH package using UV
+# Builds the pip-installable package with UV for faster installation
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies and UV
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Add UV to PATH
+ENV PATH="/root/.cargo/bin:$PATH"
+
+# Copy package files
+COPY pyproject.toml .python-version ./
+COPY besh/ ./besh/
+COPY README.md LICENSE ./
+
+# Install the package with UV (much faster than pip)
+RUN uv pip install --system --no-cache .
+
+# Install S3 support
+RUN uv pip install --system --no-cache ".[s3]"
+
+# Create necessary directories
+RUN mkdir -p /tmp/batch_files /app/logs
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV UV_SYSTEM_PYTHON=1
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Run using CLI
+CMD ["besh", "serve"]
