@@ -43,8 +43,8 @@ docker-compose -f docker-compose.infra.yml up -d
 Create a `.env` file in the project root (or copy from `.env.example`):
 
 ```bash
-# REQUIRED: Your LLM API credentials (generic naming)
-BESH_API_BASE=https://api.nebius.ai/v1
+# REQUIRED: Your LLM API credentials
+BESH_API_BASE=https://your-llm-provider.com/v1
 BESH_API_KEY=your_api_key_here
 
 # REQUIRED: Database (default for docker-compose.infra.yml)
@@ -61,7 +61,6 @@ BESH_UPLOAD_FOLDER=/tmp/batch_files
 
 **✨ That's all you need!** These values will be automatically picked up from `.env`.
 
-**Note:** Legacy names like `NEBIUS_API_BASE`, `OPENAI_API_BASE`, `SQLALCHEMY_DATABASE_URI` still work for backward compatibility!
 
 ### Step 3: Start BESH
 

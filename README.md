@@ -43,7 +43,7 @@ BESH has been transformed into a modern Python package with:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv pip install -e .
 
-# 3. Configure .env with your NEBIUS_API_BASE and NEBIUS_API_KEY
+# 3. Configure .env with your BESH_API_BASE and BESH_API_KEY
 
 # 4. Start BESH
 besh serve --host 0.0.0.0 --port 8080
@@ -138,24 +138,9 @@ All configuration can be set via environment variables with the `BESH_` prefix. 
 | | `BESH_USE_LOAD_BALANCER` | LLM endpoint is a load balancer | `false` | No |
 | | `BESH_REMOTE_CLUSTERS` | Remote cluster endpoints (comma-separated) | None | No |
 
-### Legacy Environment Variable Names (Still Supported)
+### Configuration Best Practices
 
-For backward compatibility, these legacy names are also accepted:
-
-| New Name | Legacy Alternatives |
-|----------|-------------------|
-| `BESH_API_BASE` | `NEBIUS_API_BASE`, `OPENAI_API_BASE` |
-| `BESH_API_KEY` | `NEBIUS_API_KEY`, `OPENAI_API_KEY` |
-| `BESH_DATABASE_URL` | `SQLALCHEMY_DATABASE_URI`, `DATABASE_URL` |
-| `BESH_REDIS_URL` | `REDIS_URL` |
-| `BESH_STORAGE_BACKEND` | `STORAGE_BACKEND` |
-| `BESH_UPLOAD_FOLDER` | `UPLOAD_FOLDER` |
-| `BESH_CONCURRENT_REQUESTS_PER_WORKER` | `MAX_WORKERS`, `WORKER_CONCURRENCY` |
-| `BESH_DB_POOL_SIZE` | `DB_POOL_SIZE` |
-| `BESH_DB_MAX_OVERFLOW` | `DB_MAX_OVERFLOW` |
-| `BESH_BASIC_AUTH_USERNAME` | `BASIC_AUTH_USERNAME` |
-| `BESH_BASIC_AUTH_PASSWORD` | `BASIC_AUTH_PASSWORD` |
-| `BESH_AUTH_API_KEY` | `API_KEY` |
+All configuration uses the `BESH_` prefix for clarity and consistency. Make sure your `.env` file uses these names.
 
 ### Example `.env` File
 

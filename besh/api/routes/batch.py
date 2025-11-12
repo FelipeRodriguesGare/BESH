@@ -20,6 +20,8 @@ from besh.api.models.batch import (
     count_batches_by_status,
     get_batch_status_counts,
     get_request_counts_sum,
+    create_batch_chunk,
+    get_batch_chunks,
 )
 from besh.api.auth import verify_api_key_flexible, verify_basic_auth
 from besh.api.app import get_app_config, get_app_storage
@@ -107,7 +109,9 @@ async def add_to_redis_queue(batch_id: str):
 
 @router.post("/batches")
 async def create_batch_route(
-    data: CreateBatchRequest, api_key: str = Depends(verify_api_key_flexible)
+    data: CreateBatchRequest,
+    api_key: str = Depends(verify_api_key_flexible),
+    storage: StorageInterface = Depends(get_app_storage),
 ):
     """Create a new batch job"""
     try:
@@ -130,7 +134,50 @@ async def create_batch_route(
             expires_at=expires_at,
         )
 
-        await add_to_redis_queue(batch_id)
+        # Get config for chunking settings
+        config = get_app_config()
+
+        # Count lines in input file to determine if chunking is needed
+        try:
+            line_count = await storage.count_lines(data.input_file_id)
+            logger.info(f"Batch {batch_id}: Input file has {line_count} lines")
+        except Exception as e:
+            logger.warning(
+                f"Could not count lines in {data.input_file_id}: {e}. Proceeding without chunking."
+            )
+            line_count = 0
+
+        # Determine if file should be chunked
+        if line_count > config.chunk_threshold:
+            # Large file: split into chunks
+            import math
+
+            num_chunks = math.ceil(line_count / config.chunk_size)
+            logger.info(
+                f"Batch {batch_id}: Splitting {line_count} lines into {num_chunks} chunks "
+                f"(chunk_size={config.chunk_size}, threshold={config.chunk_threshold})"
+            )
+
+            for chunk_id in range(num_chunks):
+                line_start = chunk_id * config.chunk_size
+                line_end = min((chunk_id + 1) * config.chunk_size, line_count)
+
+                # Create chunk metadata in DB
+                await create_batch_chunk(
+                    batch_id=batch_id,
+                    chunk_id=chunk_id,
+                    line_start=line_start,
+                    line_end=line_end,
+                )
+
+                # Queue chunk for processing
+                await add_to_redis_queue(f"{batch_id}:chunk:{chunk_id}")
+
+            logger.info(f"Batch {batch_id}: Queued {num_chunks} chunks for processing")
+        else:
+            # Small file or couldn't count: process as single batch (backward compatible)
+            logger.info(f"Batch {batch_id}: Queuing as single batch (no chunking)")
+            await add_to_redis_queue(batch_id)
 
         batch = {
             "id": batch_id,

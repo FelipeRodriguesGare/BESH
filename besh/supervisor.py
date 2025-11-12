@@ -1,7 +1,7 @@
 """
 Process supervisor for BESH
 
-Manages multiple API and worker processes with monitoring and graceful shutdown.
+Manages multiple API, worker, and merger processes with monitoring and graceful shutdown.
 Similar to uvicorn's multiprocessing approach.
 """
 
@@ -17,46 +17,6 @@ from besh.config import BESHConfig
 from besh.constants import SHUTDOWN_TIMEOUT
 
 logger = logging.getLogger(__name__)
-
-
-def _run_api_server(config_dict: dict, num_workers: int):
-    """
-    Run FastAPI server with Uvicorn workers (standalone function for pickling)
-
-    Args:
-        config_dict: Configuration dictionary
-        num_workers: Number of Uvicorn workers to spawn
-    """
-    try:
-        import uvicorn
-        from besh.config import BESHConfig
-        from dotenv import load_dotenv
-
-        # Load .env in child process
-        load_dotenv(override=False)
-
-        # Reconstruct config from dict
-        config = BESHConfig(**config_dict)
-
-        logger.info(
-            f"Starting API server on {config.host}:{config.port} with {num_workers} Uvicorn workers"
-        )
-
-        # Use Uvicorn's built-in worker management
-        # Create app factory string for workers
-        uvicorn.run(
-            "besh.api.app:create_app",
-            host=config.host,
-            port=config.port,
-            workers=num_workers,
-            reload=config.reload,
-            log_level=config.log_level.lower(),
-            factory=True,
-        )
-
-    except Exception as e:
-        logger.error(f"API server failed: {e}")
-        sys.exit(1)
 
 
 def _run_batch_worker(worker_id: int, config_dict: dict):
@@ -91,6 +51,37 @@ def _run_batch_worker(worker_id: int, config_dict: dict):
         sys.exit(1)
 
 
+def _run_merger_worker(config_dict: dict):
+    """
+    Run merger worker in a subprocess (standalone function for pickling)
+
+    Args:
+        config_dict: Configuration dictionary
+    """
+    try:
+        import asyncio
+        from besh.processing.merger import MergerWorker
+        from besh.config import BESHConfig
+        from dotenv import load_dotenv
+
+        # Load .env in child process
+        load_dotenv(override=False)
+
+        # Reconstruct config from dict
+        config = BESHConfig(**config_dict)
+
+        logger.info("Merger worker starting")
+
+        # Create and run merger worker
+        merger = MergerWorker(config)
+
+        asyncio.run(merger.start())
+
+    except Exception as e:
+        logger.error(f"Merger worker failed: {e}")
+        sys.exit(1)
+
+
 class ProcessSupervisor:
     """
     Supervisor for managing multiple API and worker processes
@@ -113,6 +104,8 @@ class ProcessSupervisor:
             api_only: Only run API processes (no batch workers)
             workers_only: Only run worker processes (no API)
         """
+        # Keep config for easy access (not passed to subprocesses)
+        self.config = config
         # Store config as dict to avoid pickling issues with Pydantic models
         self.config_dict = config.model_dump()
         self.api_only = api_only
@@ -123,11 +116,14 @@ class ProcessSupervisor:
         # Determine what to run
         self.num_api_workers = 0 if workers_only else config.api_workers
         self.num_batch_workers = 0 if api_only else config.batch_workers
+        # Always run 1 merger worker when batch workers are enabled
+        self.num_merger_workers = 1 if (self.num_batch_workers > 0) else 0
 
         logger.info(
             f"Initializing ProcessSupervisor: "
             f"api_workers={self.num_api_workers}, "
-            f"batch_workers={self.num_batch_workers}"
+            f"batch_workers={self.num_batch_workers}, "
+            f"merger_workers={self.num_merger_workers}"
         )
 
     def spawn_processes(self):
@@ -147,19 +143,8 @@ class ProcessSupervisor:
         if self.config_dict.get("storage_backend"):
             os.environ["BESH_STORAGE_BACKEND"] = self.config_dict["storage_backend"]
 
-        # Spawn API server with Uvicorn workers (single process, multiple workers)
-        if self.num_api_workers > 0:
-            process = multiprocessing.Process(
-                target=_run_api_server,
-                args=(self.config_dict, self.num_api_workers),
-                name="besh-api",
-                daemon=False,
-            )
-            process.start()
-            self.processes.append(process)
-            logger.info(
-                f"Started API server (PID: {process.pid}) with {self.num_api_workers} Uvicorn workers"
-            )
+        # Note: API workers are NOT spawned here
+        # They run in the main process using Uvicorn's built-in multiprocessing
 
         # Spawn batch workers (separate processes)
         for i in range(self.num_batch_workers):
@@ -172,6 +157,18 @@ class ProcessSupervisor:
             process.start()
             self.processes.append(process)
             logger.info(f"Started batch worker {i} (PID: {process.pid})")
+
+        # Spawn merger workers (separate processes)
+        for i in range(self.num_merger_workers):
+            process = multiprocessing.Process(
+                target=_run_merger_worker,
+                args=(self.config_dict,),
+                name=f"besh-merger-{i}",
+                daemon=False,
+            )
+            process.start()
+            self.processes.append(process)
+            logger.info(f"Started merger worker {i} (PID: {process.pid})")
 
         logger.info(f"Spawned {len(self.processes)} total processes")
 
@@ -216,22 +213,24 @@ class ProcessSupervisor:
                         )
 
                         # Determine process type and restart
-                        if process.name.startswith("besh-api-"):
-                            worker_id = int(process.name.split("-")[-1])
+                        if process.name.startswith("besh-merger-"):
                             new_process = multiprocessing.Process(
-                                target=self.run_api_server,
-                                args=(worker_id,),
-                                name=f"besh-api-{worker_id}",
+                                target=_run_merger_worker,
+                                args=(self.config_dict,),
+                                name=process.name,
                                 daemon=False,
                             )
-                        else:  # batch worker
+                        elif process.name.startswith("besh-worker-"):
                             worker_id = int(process.name.split("-")[-1])
                             new_process = multiprocessing.Process(
-                                target=self.run_batch_worker,
-                                args=(worker_id,),
+                                target=_run_batch_worker,
+                                args=(worker_id, self.config_dict),
                                 name=f"besh-worker-{worker_id}",
                                 daemon=False,
                             )
+                        else:
+                            logger.error(f"Unknown process type: {process.name}")
+                            continue
 
                         new_process.start()
                         self.processes[i] = new_process
@@ -307,14 +306,36 @@ class ProcessSupervisor:
             # Set up signal handlers
             self.handle_signals()
 
-            # Spawn all processes
+            # Spawn batch/merger workers as subprocesses
             self.spawn_processes()
 
             logger.info("BESH supervisor started successfully")
             logger.info(f"Running with PID: {os.getpid()}")
 
-            # Monitor processes (blocks until shutdown)
-            self.monitor_processes()
+            # If API workers requested, run Uvicorn in main process (blocks)
+            # Uvicorn handles its own multiprocessing for API workers
+            if self.num_api_workers > 0:
+                import uvicorn
+
+                logger.info(
+                    f"Starting API server on {self.config.host}:{self.config.port} "
+                    f"with {self.num_api_workers} Uvicorn workers"
+                )
+
+                # Run Uvicorn with its internal worker management
+                # This blocks until shutdown
+                uvicorn.run(
+                    "besh.api.app:create_app",
+                    host=self.config.host,
+                    port=self.config.port,
+                    workers=self.num_api_workers,
+                    reload=self.config.reload,
+                    log_level=self.config.log_level.lower(),
+                    factory=True,
+                )
+            else:
+                # No API workers, just monitor batch/merger workers
+                self.monitor_processes()
 
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt")

@@ -34,19 +34,19 @@ def _get_credentials():
 
 class Auth:
     """Authentication utilities class."""
-
+    
     @staticmethod
     def get_basic_auth_credentials():
         """Get basic auth credentials from config or environment."""
         username, password, _ = _get_credentials()
         return username, password
-
+    
     @staticmethod
     def get_api_key():
         """Get API key from config or environment."""
         _, _, api_key = _get_credentials()
         return api_key
-
+    
     @staticmethod
     def verify_basic_auth(username: str, password: str) -> bool:
         """Verify basic authentication credentials."""
@@ -54,7 +54,7 @@ class Auth:
         return secrets.compare_digest(
             username, expected_username
         ) and secrets.compare_digest(password, expected_password)
-
+    
     @staticmethod
     def verify_api_key(api_key: str) -> bool:
         """Verify API key authentication."""
@@ -80,32 +80,32 @@ async def verify_api_key(
 ) -> str:
     """FastAPI dependency to verify API key authentication."""
     api_key = None
-
+    
     # Check for API key in Authorization header (Bearer token)
     if authorization and authorization.credentials:
         api_key = authorization.credentials
-
+    
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API key required. Provide via Authorization: Bearer <key> header.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
+    
     if not Auth.verify_api_key(api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
+    
     return api_key
 
 
 # Alternative dependency that checks multiple header formats
 async def verify_api_key_flexible(request: Request) -> str:
     """FastAPI dependency to verify API key from multiple header formats."""
-
+    
     # Check for API key in various headers
     api_key = (
         request.headers.get("X-API-Key")
@@ -116,17 +116,17 @@ async def verify_api_key_flexible(request: Request) -> str:
             else None
         )
     )
-
+    
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API key required. Provide via X-API-Key, Api-Key, or Authorization: Bearer <key> header.",
         )
-
+    
     if not Auth.verify_api_key(api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
         )
-
+    
     return api_key

@@ -8,6 +8,10 @@ import click
 import sys
 import logging
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file before anything else
+load_dotenv()
 
 # Set up logging
 logging.basicConfig(
@@ -61,7 +65,9 @@ def cli():
     help="Storage backend",
 )
 @click.option(
-    "--upload-folder", default="/tmp/batch_files", help="Local storage folder"
+    "--upload-folder",
+    default=None,
+    help="Local storage folder (default: from .env or /tmp/batch_files)",
 )
 @click.option("--s3-bucket", help="S3 bucket name (required if storage=s3)")
 @click.option("--s3-region", default="us-east-1", help="AWS region")
@@ -158,7 +164,9 @@ def serve(config_file, **kwargs):
     "--storage", "storage_backend", type=click.Choice(["local", "s3"]), default="local"
 )
 @click.option(
-    "--upload-folder", default="/tmp/batch_files", help="Local storage folder"
+    "--upload-folder",
+    default=None,
+    help="Local storage folder (default: from .env or /tmp/batch_files)",
 )
 @click.option("--s3-bucket", help="S3 bucket name")
 @click.option("--s3-region", default="us-east-1", help="AWS region")
@@ -238,7 +246,11 @@ def worker(config_file, workers, **kwargs):
 @click.option(
     "--storage", "storage_backend", type=click.Choice(["local", "s3"]), default="local"
 )
-@click.option("--upload-folder", default="/tmp/batch_files")
+@click.option(
+    "--upload-folder",
+    default=None,
+    help="Local storage folder (default: from .env or /tmp/batch_files)",
+)
 @click.option("--s3-bucket", help="S3 bucket name")
 @click.option("--s3-region", default="us-east-1")
 @click.option("--s3-profile", help="AWS profile name")
@@ -294,7 +306,9 @@ def api(config_file, workers, **kwargs):
     help="Storage backend to test",
 )
 @click.option(
-    "--upload-folder", default="/tmp/batch_files", help="Local storage folder"
+    "--upload-folder",
+    default=None,
+    help="Local storage folder (default: from .env or /tmp/batch_files)",
 )
 @click.option("--s3-bucket", help="S3 bucket name (required for S3)")
 @click.option("--s3-region", default="us-east-1", help="AWS region")
@@ -430,6 +444,52 @@ def version():
         click.echo("  ✓ aioboto3 (S3 support)")
     except ImportError:
         click.echo("  ✗ aioboto3 (install with: pip install besh[s3])")
+
+
+@cli.command()
+@click.option(
+    "--database-url",
+    default=None,
+    help="Database connection URL (e.g., postgresql://user:pass@host/db)",
+)
+def migrate(database_url: str):
+    """
+    Run database migrations manually
+
+    This is useful when you want to run migrations separately from the application,
+    for example in a dedicated migration job or during deployment.
+
+    Example:
+        besh migrate
+        besh migrate --database-url postgresql://user:pass@localhost/besh
+    """
+    import asyncio
+    from besh.api.models.batch import run_migrations, init_db_pool
+
+    async def run_migrations_standalone():
+        """Run migrations as standalone command"""
+        click.echo("🔄 Running database migrations...")
+
+        try:
+            # Initialize database pool (without auto-migrate to avoid recursion)
+            await init_db_pool(
+                database_url=database_url,
+                auto_migrate=False,  # Explicitly disable auto-migrate
+            )
+
+            # Run migrations
+            await run_migrations()
+
+            click.echo("✅ Database migrations completed successfully!")
+
+        except Exception as e:
+            click.echo(f"❌ Migration failed: {e}", err=True)
+            import traceback
+
+            traceback.print_exc()
+            raise click.Abort()
+
+    asyncio.run(run_migrations_standalone())
 
 
 if __name__ == "__main__":

@@ -75,40 +75,20 @@ BESH_DB_POOL_SIZE=20
 BESH_DB_MAX_OVERFLOW=200
 ```
 
-## Supported Naming Conventions
+## Naming Convention
 
-BESH uses `BESH_` prefix (recommended) but also accepts legacy names for backward compatibility:
+BESH uses the `BESH_` prefix for all configuration variables for clarity and consistency:
 
-### API Credentials
 ```bash
-# Recommended (generic, clean):
-BESH_API_BASE=https://api.nebius.ai/v1
-BESH_API_KEY=your_key
+# LLM API Configuration
+BESH_API_BASE=https://your-llm-api.com/v1
+BESH_API_KEY=your_api_key_here
 
-# Legacy (also work):
-NEBIUS_API_BASE=https://api.nebius.ai/v1
-NEBIUS_API_KEY=your_key
-OPENAI_API_BASE=https://api.nebius.ai/v1
-OPENAI_API_KEY=your_key
-```
+# Database Configuration
+BESH_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/batch
 
-### Database URL
-```bash
-# Recommended:
-BESH_DATABASE_URL=postgresql://...
-
-# Legacy (also work):
-SQLALCHEMY_DATABASE_URI=postgresql://...
-DATABASE_URL=postgresql://...
-```
-
-### Redis URL
-```bash
-# Recommended:
+# Redis Configuration
 BESH_REDIS_URL=redis://localhost:6379
-
-# Legacy (also works):
-REDIS_URL=redis://localhost:6379
 ```
 
 ## Configuration Priority

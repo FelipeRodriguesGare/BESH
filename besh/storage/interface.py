@@ -185,3 +185,41 @@ class StorageInterface(ABC):
             str: Storage path (local path or S3 key)
         """
         pass
+
+    @abstractmethod
+    async def count_lines(self, file_id: str) -> int:
+        """
+        Count total lines in a file (optimized for JSONL)
+
+        Args:
+            file_id: Unique identifier for the file
+
+        Returns:
+            int: Total number of lines in the file
+
+        Raises:
+            StorageNotFoundError: If file doesn't exist
+            StorageException: If count fails
+        """
+        pass
+
+    @abstractmethod
+    async def read_lines_range(
+        self, file_id: str, start: int, end: int
+    ) -> AsyncIterator[tuple[int, str]]:
+        """
+        Read specific line range from file (for chunked processing)
+
+        Args:
+            file_id: Unique identifier for the file
+            start: Starting line number (inclusive, 0-based)
+            end: Ending line number (exclusive, 0-based)
+
+        Yields:
+            tuple[int, str]: (line_number, line_content) for each line in range
+
+        Raises:
+            StorageNotFoundError: If file doesn't exist
+            StorageException: If read fails
+        """
+        pass

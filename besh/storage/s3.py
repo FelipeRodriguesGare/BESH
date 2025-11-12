@@ -467,3 +467,57 @@ class S3Storage(StorageInterface):
         """Get the S3 path for a file"""
         s3_key = self._get_s3_key(file_id)
         return f"s3://{self.bucket}/{s3_key}"
+
+    async def count_lines(self, file_id: str) -> int:
+        """Count total lines in a file"""
+        s3_key = self._get_s3_key(file_id)
+
+        try:
+            count = 0
+            async with self._get_client() as s3:
+                response = await s3.get_object(Bucket=self.bucket, Key=s3_key)
+                async with response["Body"] as stream:
+                    buffer = b""
+                    async for chunk in stream:
+                        buffer += chunk
+                        while b"\n" in buffer:
+                            buffer = buffer.split(b"\n", 1)[1]
+                            count += 1
+                    if buffer:  # Last line without newline
+                        count += 1
+            return count
+        except Exception as e:
+            if "NoSuchKey" in str(e):
+                raise StorageNotFoundError(f"File not found: {file_id}")
+            logger.error(f"Error counting lines in {file_id}: {e}")
+            raise StorageException(f"Failed to count lines: {str(e)}")
+
+    async def read_lines_range(
+        self, file_id: str, start: int, end: int
+    ) -> AsyncIterator[tuple[int, str]]:
+        """Read specific line range from file"""
+        s3_key = self._get_s3_key(file_id)
+
+        try:
+            line_num = 0
+            async with self._get_client() as s3:
+                response = await s3.get_object(Bucket=self.bucket, Key=s3_key)
+                async with response["Body"] as stream:
+                    buffer = b""
+                    async for chunk in stream:
+                        buffer += chunk
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            if line_num >= end:
+                                return
+                            if line_num >= start:
+                                yield (line_num, line.decode("utf-8").strip())
+                            line_num += 1
+                    # Handle last line without newline
+                    if buffer and line_num < end and line_num >= start:
+                        yield (line_num, buffer.decode("utf-8").strip())
+        except Exception as e:
+            if "NoSuchKey" in str(e):
+                raise StorageNotFoundError(f"File not found: {file_id}")
+            logger.error(f"Error reading line range from {file_id}: {e}")
+            raise StorageException(f"Failed to read line range: {str(e)}")

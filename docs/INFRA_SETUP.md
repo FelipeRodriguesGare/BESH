@@ -22,7 +22,7 @@ Create a `.env` file in the project root (copy from `.env.example` and edit):
 
 ```bash
 # REQUIRED (only 3 values needed!)
-BESH_API_BASE=https://api.nebius.ai/v1
+BESH_API_BASE=https://your-llm-provider.com/v1
 BESH_API_KEY=your_api_key_here
 BESH_DATABASE_URL=postgresql+psycopg://besh:besh_password@localhost:5432/batch
 ```

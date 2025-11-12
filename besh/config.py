@@ -27,6 +27,10 @@ from besh.constants import (
     DEFAULT_DB_POOL_SIZE,
     DEFAULT_DB_MAX_OVERFLOW,
     DEFAULT_REDIS_URL,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_THRESHOLD,
+    DEFAULT_KEEP_CHUNKS,
+    DEFAULT_AUTO_MIGRATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,10 +156,6 @@ class BESHConfig(BaseSettings):
         validation_alias=AliasChoices(
             "api_base",
             "BESH_API_BASE",
-            "openai_api_base",
-            "BESH_OPENAI_API_BASE",
-            "OPENAI_API_BASE",
-            "NEBIUS_API_BASE",
         ),
     )
     api_key: str = Field(
@@ -164,10 +164,6 @@ class BESHConfig(BaseSettings):
         validation_alias=AliasChoices(
             "api_key",
             "BESH_API_KEY",
-            "openai_api_key",
-            "BESH_OPENAI_API_KEY",
-            "OPENAI_API_KEY",
-            "NEBIUS_API_KEY",
         ),
     )
     model_name: Optional[str] = Field(
@@ -193,6 +189,34 @@ class BESHConfig(BaseSettings):
         default=None,
         description="API key for batch endpoints",
         validation_alias=AliasChoices("auth_api_key", "BESH_AUTH_API_KEY", "API_KEY"),
+    )
+
+    # Chunking Configuration
+    chunk_size: int = Field(
+        default=DEFAULT_CHUNK_SIZE,
+        description="Lines per chunk for large files",
+        validation_alias=AliasChoices("chunk_size", "BESH_CHUNK_SIZE", "CHUNK_SIZE"),
+    )
+    chunk_threshold: int = Field(
+        default=DEFAULT_CHUNK_THRESHOLD,
+        description="File size threshold for automatic chunking (lines)",
+        validation_alias=AliasChoices(
+            "chunk_threshold", "BESH_CHUNK_THRESHOLD", "CHUNK_THRESHOLD"
+        ),
+    )
+    keep_chunks: bool = Field(
+        default=DEFAULT_KEEP_CHUNKS,
+        description="Keep chunk files after merge (debugging)",
+        validation_alias=AliasChoices("keep_chunks", "BESH_KEEP_CHUNKS", "KEEP_CHUNKS"),
+    )
+
+    # Database migration settings
+    auto_migrate: bool = Field(
+        default=DEFAULT_AUTO_MIGRATE,
+        description="Run database migrations automatically on startup",
+        validation_alias=AliasChoices(
+            "auto_migrate", "BESH_AUTO_MIGRATE", "AUTO_MIGRATE"
+        ),
     )
 
     # Development
@@ -249,13 +273,25 @@ class BESHConfig(BaseSettings):
     @field_validator("upload_folder")
     @classmethod
     def validate_upload_folder(cls, v):
-        """Ensure upload_folder is an absolute path"""
+        """Expand and validate upload folder path"""
         import os
+        from pathlib import Path
 
-        if not os.path.isabs(v):
-            # Convert relative path to absolute
-            v = os.path.abspath(v)
-        return v
+        # Expand home directory if present (e.g., ~/batch_files)
+        v = os.path.expanduser(v)
+
+        # Convert to Path for easier manipulation
+        path = Path(v)
+
+        # Create directory if it doesn't exist
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"Upload folder ready: {path}")
+        except Exception as e:
+            logger.warning(f"Could not create upload folder {path}: {e}")
+
+        # Return as string
+        return str(path)
 
     def validate_config(self):
         """

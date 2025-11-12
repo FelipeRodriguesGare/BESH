@@ -7,7 +7,15 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
 DEFAULT_API_WORKERS = 2
 DEFAULT_BATCH_WORKERS = 4
-DEFAULT_CONCURRENT_REQUESTS_PER_WORKER = 16
+DEFAULT_CONCURRENT_REQUESTS_PER_WORKER = 64
+
+# Chunking defaults
+DEFAULT_CHUNK_SIZE = 10000  # Lines per chunk
+DEFAULT_CHUNK_THRESHOLD = 50000  # Files > 50K lines get chunked
+DEFAULT_KEEP_CHUNKS = False  # Delete chunks after merge
+
+# Database migration defaults
+DEFAULT_AUTO_MIGRATE = True  # Run migrations automatically on startup
 
 # Storage defaults
 DEFAULT_UPLOAD_FOLDER = "/tmp/batch_files"

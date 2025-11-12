@@ -209,3 +209,42 @@ class LocalStorage(StorageInterface):
     async def get_file_path(self, file_id: str) -> str:
         """Get the storage path for a file"""
         return str(self._get_file_path(file_id))
+
+    async def count_lines(self, file_id: str) -> int:
+        """Count total lines in a file"""
+        file_path = self._get_file_path(file_id)
+
+        if not file_path.exists():
+            raise StorageNotFoundError(f"File not found: {file_id}")
+
+        try:
+            count = 0
+            async with aiofiles.open(file_path, "r") as f:
+                async for _ in f:
+                    count += 1
+            return count
+        except Exception as e:
+            logger.error(f"Error counting lines in {file_id}: {e}")
+            raise StorageException(f"Failed to count lines: {str(e)}")
+
+    async def read_lines_range(
+        self, file_id: str, start: int, end: int
+    ) -> AsyncIterator[tuple[int, str]]:
+        """Read specific line range from file"""
+        file_path = self._get_file_path(file_id)
+
+        if not file_path.exists():
+            raise StorageNotFoundError(f"File not found: {file_id}")
+
+        try:
+            line_num = 0
+            async with aiofiles.open(file_path, "r") as f:
+                async for line in f:
+                    if line_num >= end:
+                        break
+                    if line_num >= start:
+                        yield (line_num, line.strip())
+                    line_num += 1
+        except Exception as e:
+            logger.error(f"Error reading line range from {file_id}: {e}")
+            raise StorageException(f"Failed to read line range: {str(e)}")
