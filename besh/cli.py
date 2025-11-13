@@ -61,8 +61,8 @@ def cli():
     "--storage",
     "storage_backend",
     type=click.Choice(["local", "s3"]),
-    default="local",
-    help="Storage backend",
+    default=None,
+    help="Storage backend (default: from .env or 'local')",
 )
 @click.option(
     "--upload-folder",
@@ -161,7 +161,11 @@ def serve(config_file, **kwargs):
     help="Concurrent tasks per worker",
 )
 @click.option(
-    "--storage", "storage_backend", type=click.Choice(["local", "s3"]), default="local"
+    "--storage",
+    "storage_backend",
+    type=click.Choice(["local", "s3"]),
+    default=None,
+    help="Storage backend (default: from .env or 'local')",
 )
 @click.option(
     "--upload-folder",
@@ -244,7 +248,11 @@ def worker(config_file, workers, **kwargs):
     "--redis-url", default="redis://localhost:6379", help="Redis connection URL"
 )
 @click.option(
-    "--storage", "storage_backend", type=click.Choice(["local", "s3"]), default="local"
+    "--storage",
+    "storage_backend",
+    type=click.Choice(["local", "s3"]),
+    default=None,
+    help="Storage backend (default: from .env or 'local')",
 )
 @click.option(
     "--upload-folder",

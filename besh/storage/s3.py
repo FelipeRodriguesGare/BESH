@@ -102,11 +102,13 @@ class S3Storage(StorageInterface):
             file_id = f"{file_id}{JSONL_EXTENSION}"
         return file_id
 
-    async def _get_client(self):
-        """Get S3 client with retry logic"""
+    def _get_client(self):
+        """Get S3 client context manager"""
         session = self._get_session()
 
         try:
+            # Return the context manager (not awaited)
+            # This should be used with: async with self._get_client() as s3:
             return session.client(
                 "s3", region_name=self.region, endpoint_url=self.endpoint_url
             )
@@ -278,15 +280,15 @@ class S3Storage(StorageInterface):
                 )
 
                 # Read and decode stream line by line
+                # response["Body"] is an async iterator - iterate directly
                 buffer = ""
-                async with response["Body"] as stream:
-                    async for chunk in stream.iter_chunks():
-                        buffer += chunk.decode("utf-8")
+                async for chunk in response["Body"]:
+                    buffer += chunk.decode("utf-8")
 
-                        # Yield complete lines
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            yield line
+                    # Yield complete lines
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        yield line
 
                 # Yield any remaining content
                 if buffer:
@@ -476,15 +478,15 @@ class S3Storage(StorageInterface):
             count = 0
             async with self._get_client() as s3:
                 response = await s3.get_object(Bucket=self.bucket, Key=s3_key)
-                async with response["Body"] as stream:
-                    buffer = b""
-                    async for chunk in stream:
-                        buffer += chunk
-                        while b"\n" in buffer:
-                            buffer = buffer.split(b"\n", 1)[1]
-                            count += 1
-                    if buffer:  # Last line without newline
+                # response["Body"] is an async iterator - iterate directly
+                buffer = b""
+                async for chunk in response["Body"]:
+                    buffer += chunk
+                    while b"\n" in buffer:
+                        buffer = buffer.split(b"\n", 1)[1]
                         count += 1
+                if buffer:  # Last line without newline
+                    count += 1
             return count
         except Exception as e:
             if "NoSuchKey" in str(e):
@@ -502,20 +504,20 @@ class S3Storage(StorageInterface):
             line_num = 0
             async with self._get_client() as s3:
                 response = await s3.get_object(Bucket=self.bucket, Key=s3_key)
-                async with response["Body"] as stream:
-                    buffer = b""
-                    async for chunk in stream:
-                        buffer += chunk
-                        while b"\n" in buffer:
-                            line, buffer = buffer.split(b"\n", 1)
-                            if line_num >= end:
-                                return
-                            if line_num >= start:
-                                yield (line_num, line.decode("utf-8").strip())
-                            line_num += 1
-                    # Handle last line without newline
-                    if buffer and line_num < end and line_num >= start:
-                        yield (line_num, buffer.decode("utf-8").strip())
+                # response["Body"] is an async iterator - iterate directly
+                buffer = b""
+                async for chunk in response["Body"]:
+                    buffer += chunk
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        if line_num >= end:
+                            return
+                        if line_num >= start:
+                            yield (line_num, line.decode("utf-8").strip())
+                        line_num += 1
+                # Handle last line without newline
+                if buffer and line_num < end and line_num >= start:
+                    yield (line_num, buffer.decode("utf-8").strip())
         except Exception as e:
             if "NoSuchKey" in str(e):
                 raise StorageNotFoundError(f"File not found: {file_id}")

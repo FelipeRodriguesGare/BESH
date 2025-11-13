@@ -239,3 +239,6 @@ batch_files/
 # Docker volumes and data
 docker-data/
 volumes/
+
+.cursor/
+.cursorrules
