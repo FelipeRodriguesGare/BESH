@@ -40,6 +40,9 @@ def get_storage(config) -> StorageInterface:
             profile=config.s3_profile,
             endpoint_url=config.s3_endpoint_url,
             presigned_expiry=config.s3_presigned_expiry,
+            streaming_enabled=config.s3_streaming_enabled,
+            prefix_input=config.s3_prefix_input,
+            prefix_output=config.s3_prefix_output,
         )
     else:
         return LocalStorage(config.upload_folder)

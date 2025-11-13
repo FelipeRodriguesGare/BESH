@@ -11,7 +11,7 @@ DEFAULT_CONCURRENT_REQUESTS_PER_WORKER = 64
 
 # Chunking defaults
 DEFAULT_CHUNK_SIZE = 10000  # Lines per chunk
-DEFAULT_CHUNK_THRESHOLD = 50000  # Files > 50K lines get chunked
+DEFAULT_CHUNK_THRESHOLD = 0  # 0 = chunking disabled (opt-in feature)
 DEFAULT_KEEP_CHUNKS = False  # Delete chunks after merge
 
 # Database migration defaults
@@ -21,6 +21,9 @@ DEFAULT_AUTO_MIGRATE = True  # Run migrations automatically on startup
 DEFAULT_UPLOAD_FOLDER = "/tmp/batch_files"
 DEFAULT_S3_REGION = "us-east-1"
 DEFAULT_S3_PRESIGNED_EXPIRY = 3600
+DEFAULT_S3_STREAMING_ENABLED = False  # Start disabled for safety
+DEFAULT_S3_PREFIX_INPUT = "besh/input"  # S3 prefix for input files
+DEFAULT_S3_PREFIX_OUTPUT = "besh/output"  # S3 prefix for output/result files
 
 # Database defaults
 DEFAULT_DB_POOL_SIZE = 20
@@ -37,7 +40,7 @@ REDIS_BATCH_PROCESSING = "batch_processing"
 JSONL_EXTENSION = ".jsonl"
 
 # Timeouts and retries
-SHUTDOWN_TIMEOUT = 10  # seconds
+SHUTDOWN_TIMEOUT = 3  # seconds - reduced for faster shutdown
 S3_RETRY_COUNT = 3
 S3_RETRY_BACKOFF_FACTOR = 2
 

@@ -6,7 +6,7 @@ Supports IAM roles, named profiles, and explicit credentials.
 
 import asyncio
 import io
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 import logging
 
 from besh.storage.interface import StorageInterface
@@ -54,6 +54,9 @@ class S3Storage(StorageInterface):
         profile: Optional[str] = None,
         endpoint_url: Optional[str] = None,
         presigned_expiry: int = 3600,
+        streaming_enabled: bool = False,
+        prefix_input: str = "",
+        prefix_output: str = "",
     ):
         """
         Initialize S3 storage
@@ -64,6 +67,9 @@ class S3Storage(StorageInterface):
             profile: AWS profile name for authentication (optional)
             endpoint_url: Custom S3 endpoint (for MinIO, LocalStack, etc.)
             presigned_expiry: Presigned URL expiration time in seconds
+            streaming_enabled: Enable streaming multipart uploads (default: False)
+            prefix_input: S3 prefix for input files (e.g., 'besh/input')
+            prefix_output: S3 prefix for output/result files (e.g., 'besh/output')
         """
         if aioboto3 is None:
             raise ImportError(
@@ -75,11 +81,15 @@ class S3Storage(StorageInterface):
         self.profile = profile
         self.endpoint_url = endpoint_url
         self.presigned_expiry = presigned_expiry
+        self.streaming_enabled = streaming_enabled
+        self.prefix_input = prefix_input.strip("/") if prefix_input else ""
+        self.prefix_output = prefix_output.strip("/") if prefix_output else ""
         self._session = None
 
         logger.info(
             f"Initialized S3Storage: bucket={bucket}, region={region}, "
-            f"profile={profile}, endpoint={endpoint_url}"
+            f"profile={profile}, endpoint={endpoint_url}, streaming={streaming_enabled}, "
+            f"prefix_input={self.prefix_input}, prefix_output={self.prefix_output}"
         )
 
     def _get_session(self):
@@ -96,11 +106,33 @@ class S3Storage(StorageInterface):
         return self._session
 
     def _get_s3_key(self, file_id: str) -> str:
-        """Get S3 key for a file ID"""
+        """
+        Get S3 key for a file ID with appropriate prefix
+
+        Determines file type and applies the correct prefix:
+        - Input files (file_*): use prefix_input
+        - Output/result files (r_* or *.chunk_*): use prefix_output
+        """
         # Ensure file_id has .jsonl extension
         if not file_id.endswith(JSONL_EXTENSION):
             file_id = f"{file_id}{JSONL_EXTENSION}"
-        return file_id
+
+        # Determine if this is an input or output file
+        if file_id.startswith("file_"):
+            # Input file
+            prefix = self.prefix_input
+        elif file_id.startswith("r_") or ".chunk_" in file_id:
+            # Output/result file or chunk file
+            prefix = self.prefix_output
+        else:
+            # Unknown type, use input prefix as fallback
+            prefix = self.prefix_input
+
+        # Construct key with prefix
+        if prefix:
+            return f"{prefix}/{file_id}"
+        else:
+            return file_id
 
     def _get_client(self):
         """Get S3 client context manager"""
@@ -304,7 +336,20 @@ class S3Storage(StorageInterface):
             raise StorageDownloadError(f"Failed to read lines from file {file_id}: {e}")
 
     async def write_lines(self, file_id: str, lines: AsyncIterator[str]) -> str:
-        """Write lines to file"""
+        """Write lines to file with optional streaming multipart upload"""
+
+        # Feature flag: use streaming or buffered approach
+        if self.streaming_enabled:
+            logger.debug(f"Using streaming multipart upload for {file_id}")
+            return await self._write_lines_streaming(file_id, lines)
+        else:
+            logger.debug(f"Using buffered upload for {file_id}")
+            return await self._write_lines_buffered(file_id, lines)
+
+    async def _write_lines_buffered(
+        self, file_id: str, lines: AsyncIterator[str]
+    ) -> str:
+        """Write lines to file using buffered approach (current implementation)"""
         s3_key = self._get_s3_key(file_id)
 
         try:
@@ -328,12 +373,148 @@ class S3Storage(StorageInterface):
                     ServerSideEncryption="AES256",
                 )
 
-            logger.info(f"Wrote lines to file {file_id} in S3")
+            logger.info(f"Wrote lines to file {file_id} in S3 (buffered)")
             return file_id
 
         except Exception as e:
             logger.error(f"Failed to write lines to file {file_id}: {e}")
             raise StorageUploadError(f"Failed to write lines to file {file_id}: {e}")
+
+    async def _write_lines_streaming(
+        self, file_id: str, lines: AsyncIterator[str]
+    ) -> str:
+        """Write lines to file using streaming multipart upload
+
+        Optimization: If file ends up being small (<5MB), uses simple put_object
+        instead of multipart upload to avoid API overhead.
+        """
+        s3_key = self._get_s3_key(file_id)
+        upload_id = None
+        parts = []
+        part_number = 1
+        chunk_buffer = io.BytesIO()
+        multipart_started = False
+
+        try:
+            async with self._get_client() as s3:
+                # Stream lines into chunks
+                async for line in lines:
+                    line_bytes = line.encode("utf-8")
+                    if not line.endswith("\n"):
+                        line_bytes += b"\n"
+                    chunk_buffer.write(line_bytes)
+
+                    # Upload chunk when it reaches threshold
+                    if chunk_buffer.tell() >= S3_MULTIPART_CHUNK_SIZE:
+                        # Start multipart upload on first large chunk
+                        if not multipart_started:
+                            response = await s3.create_multipart_upload(
+                                Bucket=self.bucket,
+                                Key=s3_key,
+                                ServerSideEncryption="AES256",
+                            )
+                            upload_id = response["UploadId"]
+                            multipart_started = True
+                            logger.debug(
+                                f"Started multipart upload for {file_id} (upload_id: {upload_id})"
+                            )
+
+                        part = await self._upload_part_from_buffer(
+                            s3, s3_key, upload_id, part_number, chunk_buffer
+                        )
+                        parts.append(part)
+                        part_number += 1
+                        chunk_buffer = io.BytesIO()
+
+                # Handle final chunk
+                if multipart_started:
+                    # We used multipart upload - upload final chunk and complete
+                    if chunk_buffer.tell() > 0:
+                        part = await self._upload_part_from_buffer(
+                            s3, s3_key, upload_id, part_number, chunk_buffer
+                        )
+                        parts.append(part)
+
+                    # Complete multipart upload
+                    await s3.complete_multipart_upload(
+                        Bucket=self.bucket,
+                        Key=s3_key,
+                        UploadId=upload_id,
+                        MultipartUpload={"Parts": parts},
+                    )
+
+                    logger.info(
+                        f"Completed multipart upload for {file_id} "
+                        f"({len(parts)} parts, upload_id: {upload_id})"
+                    )
+                else:
+                    # File is small - use simple put_object (much faster for small files)
+                    chunk_buffer.seek(0)
+                    content = chunk_buffer.getvalue()
+
+                    await self._retry_operation(
+                        s3.put_object,
+                        Bucket=self.bucket,
+                        Key=s3_key,
+                        Body=content,
+                        ServerSideEncryption="AES256",
+                    )
+
+                    logger.info(
+                        f"Wrote lines to file {file_id} in S3 using simple upload "
+                        f"({len(content)} bytes - below multipart threshold)"
+                    )
+
+                return file_id
+
+        except Exception as e:
+            # Abort multipart upload on failure
+            if upload_id:
+                try:
+                    async with self._get_client() as s3:
+                        await s3.abort_multipart_upload(
+                            Bucket=self.bucket,
+                            Key=s3_key,
+                            UploadId=upload_id,
+                        )
+                    logger.warning(
+                        f"Aborted multipart upload for {file_id} (upload_id: {upload_id})"
+                    )
+                except Exception as abort_error:
+                    logger.error(f"Failed to abort multipart upload: {abort_error}")
+
+            logger.error(f"Failed to write lines to file {file_id}: {e}")
+            raise StorageUploadError(f"Failed to write lines to file {file_id}: {e}")
+
+    async def _upload_part_from_buffer(
+        self,
+        s3_client,
+        s3_key: str,
+        upload_id: str,
+        part_number: int,
+        buffer: io.BytesIO,
+    ) -> Dict[str, Any]:
+        """Upload a single part from buffer"""
+        # Get the actual size before seeking
+        part_size = buffer.tell()
+        buffer.seek(0)
+        body = buffer.getvalue()
+
+        response = await self._retry_operation(
+            s3_client.upload_part,
+            Bucket=self.bucket,
+            Key=s3_key,
+            PartNumber=part_number,
+            UploadId=upload_id,
+            Body=body,
+        )
+
+        logger.info(f"Uploaded part {part_number} ({part_size} bytes) for {s3_key}")
+
+        return {
+            "PartNumber": part_number,
+            "ETag": response["ETag"],
+        }
 
     async def delete(self, file_id: str) -> bool:
         """Delete a file"""

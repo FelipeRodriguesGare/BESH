@@ -7,6 +7,7 @@ Processes batch jobs from Redis queue using storage abstraction.
 import asyncio
 import json
 import uuid
+import signal
 from datetime import datetime
 from typing import Dict, Any, Optional
 import logging
@@ -344,12 +345,9 @@ class FileProcessor:
             await update_chunk_completion(
                 batch_id,
                 chunk_id,
-                output_file_id,
                 successful_count,
                 error_count,
-                total_prompt_tokens,
-                total_completion_tokens,
-                total_total_tokens,
+                output_file_id,
             )
 
             duration = (datetime.now() - start_time).total_seconds()
@@ -682,16 +680,29 @@ class WorkerNode:
         self.worker_id = worker_id
         self.config = config
         self.processor = FileProcessor(config)
+        self.should_exit = False
+
+    def _handle_shutdown_signal(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        sig_name = signal.Signals(signum).name
+        logger.info(
+            f"Worker {self.worker_id} received signal {sig_name}, shutting down..."
+        )
+        self.should_exit = True
 
     async def start(self):
         """Start worker node (blocking)"""
+        # Set up signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
+
         # Initialize processor
         await self.processor.initialize()
 
         logger.info(f"Worker {self.worker_id} started and waiting for jobs...")
         await asyncio.sleep(self.worker_id * 1.0)  # Stagger startup
 
-        while True:
+        while not self.should_exit:
             try:
                 # Atomically move from queue to processing list to avoid job loss
                 job_id = await self.processor.redis_client.brpoplpush(

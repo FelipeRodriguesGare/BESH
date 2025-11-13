@@ -116,14 +116,17 @@ class ProcessSupervisor:
         # Determine what to run
         self.num_api_workers = 0 if workers_only else config.api_workers
         self.num_batch_workers = 0 if api_only else config.batch_workers
-        # Always run 1 merger worker when batch workers are enabled
-        self.num_merger_workers = 1 if (self.num_batch_workers > 0) else 0
+        # Only run merger worker if batch workers are enabled AND chunking is enabled
+        self.num_merger_workers = (
+            1 if (self.num_batch_workers > 0 and config.chunk_threshold > 0) else 0
+        )
 
         logger.info(
             f"Initializing ProcessSupervisor: "
             f"api_workers={self.num_api_workers}, "
             f"batch_workers={self.num_batch_workers}, "
-            f"merger_workers={self.num_merger_workers}"
+            f"merger_workers={self.num_merger_workers}, "
+            f"chunking_enabled={config.chunk_threshold > 0}"
         )
 
     def spawn_processes(self):
@@ -159,16 +162,23 @@ class ProcessSupervisor:
             logger.info(f"Started batch worker {i} (PID: {process.pid})")
 
         # Spawn merger workers (separate processes)
-        for i in range(self.num_merger_workers):
-            process = multiprocessing.Process(
-                target=_run_merger_worker,
-                args=(self.config_dict,),
-                name=f"besh-merger-{i}",
-                daemon=False,
-            )
-            process.start()
-            self.processes.append(process)
-            logger.info(f"Started merger worker {i} (PID: {process.pid})")
+        if self.num_merger_workers > 0:
+            for i in range(self.num_merger_workers):
+                process = multiprocessing.Process(
+                    target=_run_merger_worker,
+                    args=(self.config_dict,),
+                    name=f"besh-merger-{i}",
+                    daemon=False,
+                )
+                process.start()
+                self.processes.append(process)
+                logger.info(f"Started merger worker {i} (PID: {process.pid})")
+        else:
+            if self.num_batch_workers > 0:
+                logger.info(
+                    "Merger worker not spawned: chunking is disabled "
+                    f"(BESH_CHUNK_THRESHOLD={self.config.chunk_threshold})"
+                )
 
         logger.info(f"Spawned {len(self.processes)} total processes")
 
@@ -249,46 +259,73 @@ class ProcessSupervisor:
         If they don't exit within SHUTDOWN_TIMEOUT, sends SIGKILL.
         """
         if not self.processes:
+            logger.info("No processes to shut down")
             return
 
-        logger.info(f"Shutting down {len(self.processes)} processes...")
+        num_processes = len(self.processes)
+        logger.info(f"Shutting down {num_processes} processes...")
+        sys.stdout.flush()  # Ensure log is printed immediately
 
-        # Send SIGTERM to all processes
+        # Send SIGTERM to all processes first (non-blocking)
+        alive_processes = []
         for process in self.processes:
             if process.is_alive():
-                logger.debug(f"Sending SIGTERM to {process.name} (PID: {process.pid})")
+                alive_processes.append(process)
                 try:
+                    logger.info(f"Terminating {process.name} (PID: {process.pid})")
+                    sys.stdout.flush()
                     process.terminate()
                 except Exception as e:
                     logger.warning(f"Failed to terminate {process.name}: {e}")
+                    sys.stdout.flush()
 
-        # Wait for processes to exit
+        if not alive_processes:
+            logger.info("All processes already stopped")
+            return
+
+        # Wait for all processes with a global timeout
+        logger.info(
+            f"Waiting up to {SHUTDOWN_TIMEOUT}s for processes to exit gracefully..."
+        )
+        sys.stdout.flush()
+
         shutdown_start = time.time()
-        for process in self.processes:
-            remaining_time = SHUTDOWN_TIMEOUT - (time.time() - shutdown_start)
+        while alive_processes and (time.time() - shutdown_start) < SHUTDOWN_TIMEOUT:
+            # Check which processes are still alive
+            still_alive = []
+            for process in alive_processes:
+                if process.is_alive():
+                    still_alive.append(process)
+                else:
+                    logger.info(f"{process.name} exited successfully")
+                    sys.stdout.flush()
 
-            if remaining_time <= 0:
-                break
+            alive_processes = still_alive
 
-            try:
-                process.join(timeout=remaining_time)
-            except Exception as e:
-                logger.warning(f"Error waiting for {process.name}: {e}")
+            if alive_processes:
+                # Brief sleep to avoid busy waiting
+                time.sleep(0.1)
 
         # Force kill any remaining processes
-        for process in self.processes:
-            if process.is_alive():
-                logger.warning(
-                    f"Process {process.name} (PID: {process.pid}) didn't exit gracefully, "
-                    "sending SIGKILL"
-                )
-                try:
-                    process.kill()
-                    process.join(timeout=1)
-                except Exception as e:
-                    logger.error(f"Failed to kill {process.name}: {e}")
+        if alive_processes:
+            logger.warning(
+                f"Timeout reached. Force killing {len(alive_processes)} remaining processes..."
+            )
+            sys.stdout.flush()
+
+            for process in alive_processes:
+                if process.is_alive():
+                    try:
+                        logger.warning(f"Killing {process.name} (PID: {process.pid})")
+                        sys.stdout.flush()
+                        process.kill()
+                        process.join(timeout=0.5)
+                    except Exception as e:
+                        logger.error(f"Failed to kill {process.name}: {e}")
+                        sys.stdout.flush()
 
         logger.info("All processes shut down")
+        sys.stdout.flush()
 
     def start(self):
         """

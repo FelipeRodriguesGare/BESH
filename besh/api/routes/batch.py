@@ -148,7 +148,8 @@ async def create_batch_route(
             line_count = 0
 
         # Determine if file should be chunked
-        if line_count > config.chunk_threshold:
+        # Only chunk if threshold > 0 (chunking enabled) AND file exceeds threshold
+        if config.chunk_threshold > 0 and line_count > config.chunk_threshold:
             # Large file: split into chunks
             import math
 

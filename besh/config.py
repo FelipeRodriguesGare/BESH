@@ -24,6 +24,9 @@ from besh.constants import (
     DEFAULT_UPLOAD_FOLDER,
     DEFAULT_S3_REGION,
     DEFAULT_S3_PRESIGNED_EXPIRY,
+    DEFAULT_S3_STREAMING_ENABLED,
+    DEFAULT_S3_PREFIX_INPUT,
+    DEFAULT_S3_PREFIX_OUTPUT,
     DEFAULT_DB_POOL_SIZE,
     DEFAULT_DB_MAX_OVERFLOW,
     DEFAULT_REDIS_URL,
@@ -97,6 +100,33 @@ class BESHConfig(BaseSettings):
     s3_presigned_expiry: int = Field(
         default=DEFAULT_S3_PRESIGNED_EXPIRY,
         description="Presigned URL expiration time in seconds",
+    )
+    s3_streaming_enabled: bool = Field(
+        default=DEFAULT_S3_STREAMING_ENABLED,
+        description="Enable S3 multipart streaming uploads (reduces memory usage for large files)",
+        validation_alias=AliasChoices(
+            "s3_streaming_enabled",
+            "BESH_S3_STREAMING_ENABLED",
+            "S3_STREAMING_ENABLED",
+        ),
+    )
+    s3_prefix_input: str = Field(
+        default=DEFAULT_S3_PREFIX_INPUT,
+        description="S3 prefix for input files (e.g., 'besh/input')",
+        validation_alias=AliasChoices(
+            "s3_prefix_input",
+            "BESH_S3_PREFIX_INPUT",
+            "S3_PREFIX_INPUT",
+        ),
+    )
+    s3_prefix_output: str = Field(
+        default=DEFAULT_S3_PREFIX_OUTPUT,
+        description="S3 prefix for output/result files (e.g., 'besh/output')",
+        validation_alias=AliasChoices(
+            "s3_prefix_output",
+            "BESH_S3_PREFIX_OUTPUT",
+            "S3_PREFIX_OUTPUT",
+        ),
     )
 
     # Database Configuration

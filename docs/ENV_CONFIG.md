@@ -38,7 +38,18 @@ Everything from `.env` is **automatically loaded**. No need to pass database URL
 | Auth API Key | `BESH_AUTH_API_KEY` | `API_KEY` | ✅ Yes | ❌ No (optional) |
 | Storage | `BESH_STORAGE_BACKEND` | `STORAGE_BACKEND` | ✅ Yes | ❌ No (default: `local`) |
 | Upload Folder | `BESH_UPLOAD_FOLDER` | `UPLOAD_FOLDER` | ✅ Yes | ❌ No (default: `/tmp/batch_files`) |
+| S3 Bucket | `BESH_S3_BUCKET` | `S3_BUCKET` | ✅ Yes | ❌ No (required for S3) |
+| S3 Region | `BESH_S3_REGION` | `S3_REGION` | ✅ Yes | ❌ No (default: `us-east-1`) |
+| S3 Profile | `BESH_S3_PROFILE` | `S3_PROFILE` | ✅ Yes | ❌ No (uses IAM role by default) |
+| S3 Prefix Input | `BESH_S3_PREFIX_INPUT` | `S3_PREFIX_INPUT` | ✅ Yes | ❌ No (default: `besh/input`) |
+| S3 Prefix Output | `BESH_S3_PREFIX_OUTPUT` | `S3_PREFIX_OUTPUT` | ✅ Yes | ❌ No (default: `besh/output`) |
+| S3 Streaming | `BESH_S3_STREAMING_ENABLED` | `S3_STREAMING_ENABLED` | ✅ Yes | ❌ No (default: `false`) |
+| Chunk Size | `BESH_CHUNK_SIZE` | `CHUNK_SIZE` | ✅ Yes | ❌ No (default: `10000`) |
+| Chunk Threshold | `BESH_CHUNK_THRESHOLD` | `CHUNK_THRESHOLD` | ✅ Yes | ❌ No (default: `0` - disabled) |
+| Keep Chunks | `BESH_KEEP_CHUNKS` | `KEEP_CHUNKS` | ✅ Yes | ❌ No (default: `false`) |
 | Max Workers | `BESH_MAX_WORKERS` | `MAX_WORKERS` | ✅ Yes | ❌ No (default: `64`) |
+
+**Note on S3 Streaming**: Streaming uploads reduce memory usage for large files but are disabled by default for safety. When enabled, BESH uses S3 multipart uploads to stream results in 5MB chunks instead of buffering the entire file in memory. Enable after testing in your environment.
 
 ## Complete `.env` Example
 
@@ -67,6 +78,25 @@ BESH_AUTH_API_KEY=your_api_key_here
 # Storage (default: local)
 BESH_STORAGE_BACKEND=local
 BESH_UPLOAD_FOLDER=/tmp/batch_files
+
+# S3 Storage Configuration (uncomment if using S3)
+# BESH_STORAGE_BACKEND=s3
+# BESH_S3_BUCKET=your-bucket-name
+# BESH_S3_REGION=us-east-1
+# BESH_S3_PROFILE=your-aws-profile  # Optional: AWS profile name
+# BESH_S3_PREFIX_INPUT=besh/input   # Optional: S3 prefix for input files
+# BESH_S3_PREFIX_OUTPUT=besh/output # Optional: S3 prefix for output files
+
+# S3 Streaming (reduces memory for large batch outputs)
+# Default: false (uses current buffered approach)
+# Set to 'true' after testing to enable streaming multipart uploads
+# BESH_S3_STREAMING_ENABLED=false
+
+# Chunking (for large batch files - disabled by default)
+# Set BESH_CHUNK_THRESHOLD > 0 to enable (e.g., 50000 to chunk files > 50K lines)
+BESH_CHUNK_SIZE=10000          # Lines per chunk
+BESH_CHUNK_THRESHOLD=0         # 0 = disabled, >0 = enable chunking
+BESH_KEEP_CHUNKS=false         # Delete chunks after merge
 
 # Worker tuning (optional)
 BESH_MAX_WORKERS=64
@@ -149,6 +179,60 @@ BESH_REDIS_URL=redis://localhost:6380
 **Command:**
 ```bash
 besh serve --host 0.0.0.0 --port 8080 --log-level debug
+```
+
+### Example 4: S3 Storage with Custom Prefixes
+
+**`.env` file:**
+```bash
+BESH_API_BASE=https://api.your-llm.com/v1
+BESH_API_KEY=your_key_here
+BESH_DATABASE_URL=postgresql+psycopg://besh:besh_password@localhost:5432/batch
+
+# S3 Configuration
+BESH_STORAGE_BACKEND=s3
+BESH_S3_BUCKET=prod-batch-api
+BESH_S3_REGION=us-east-1
+BESH_S3_PROFILE=production-profile
+BESH_S3_PREFIX_INPUT=prod/batch-api/inputs
+BESH_S3_PREFIX_OUTPUT=prod/batch-api/outputs
+```
+
+**Result in S3:**
+```
+s3://prod-batch-api/
+├── prod/
+│   └── batch-api/
+│       ├── inputs/
+│       │   ├── file_abc123.jsonl
+│       │   └── file_xyz789.jsonl
+│       └── outputs/
+│           ├── r_batch_abc123.jsonl
+│           └── r_batch_abc123.chunk_0.jsonl
+```
+
+**Command:**
+```bash
+besh serve --host 0.0.0.0 --port 8080
+```
+
+### Example 5: Enabling Chunking for Large Files
+
+**`.env` file:**
+```bash
+BESH_API_BASE=https://api.your-llm.com/v1
+BESH_API_KEY=your_key_here
+BESH_DATABASE_URL=postgresql+psycopg://besh:besh_password@localhost:5432/batch
+
+# Enable chunking for files > 100K lines
+BESH_CHUNK_THRESHOLD=100000
+BESH_CHUNK_SIZE=10000
+BESH_KEEP_CHUNKS=false  # Delete chunks after merging
+```
+
+**Command:**
+```bash
+besh serve --host 0.0.0.0 --port 8080 --worker-processes 8
 ```
 
 ## Common Questions
